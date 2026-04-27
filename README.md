@@ -2,7 +2,8 @@ ARC-AGI Training Pipeline
 
 P2P-pipeline for decentralised ARC-AGI AI training.
 
-The idea: short human-play sessions generate reproducible traces from salted procedural ARC-style games. These traces can help train open-source adapters for ARC-style interactive reasoning agents.
+The idea: short human-play sessions generate reproducible traces from salted procedural ARC-style games. To be build on top of https://github.com/ubiubi18/ARCEngine 
+These traces can help train open-source adapters for ARC-style interactive reasoning agents.
 
 ```text
 Forking the Idena identity / session layer
