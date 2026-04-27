@@ -22,3 +22,6 @@ Federated aggregation
 Open-source packaged ARC agent
         ↓
 (optional) individual Kaggle / ARC Prize submissions of participants are possible, since network security is in symbiosis with specialized ARC-AGI adapter training
+```
+
+more to come...
