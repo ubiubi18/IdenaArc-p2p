@@ -2,7 +2,7 @@ ARC-AGI Training Pipeline
 
 P2P-pipeline for decentralised ARC-AGI AI training.
 
-To be build on top of https://github.com/ubiubi18/ARCEngine , while also using https://docs.idena.io/docs/developer/validation and https://docs.idena.io/docs/developer/ipfs/upload
+To be build on top of a fork of https://github.com/arcprize/ARCEngine , while also using https://docs.idena.io/docs/developer/validation flows and https://docs.idena.io/docs/developer/ipfs/upload ipfs network
 
 To be integrated into https://github.com/ubiubi18/IdenaAI_Benchmarker
 
