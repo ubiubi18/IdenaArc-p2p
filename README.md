@@ -81,6 +81,12 @@ Official upstream binaries are disabled for rehearsal unless explicitly allowed:
 IDENA_NODE_ALLOW_UPSTREAM_BINARY=1 npm start
 ```
 
+## Large bundled artifacts
+
+Large `idena-wasm-binding` static libraries are tracked intentionally for
+reproducible local rehearsal builds; do not add new large artifacts outside the
+release-artifact allowlist.
+
 ## Checks
 
 ```bash

@@ -68,26 +68,27 @@ for (const filePath of expectedFiles) {
 const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'))
 
 requireCondition(
-  packageJson.name === 'idena-ai',
-  'package.json name must remain idena-ai'
+  packageJson.name === 'idena-arc',
+  'package.json name must remain idena-arc'
 )
 requireCondition(
-  packageJson.productName === 'IdenaAI',
-  'package.json productName must remain IdenaAI'
+  packageJson.productName === 'IdenaArc',
+  'package.json productName must remain IdenaArc'
 )
 requireCondition(
   packageJson.repository &&
-    packageJson.repository.url === 'https://github.com/ubiubi18/IdenaAI.git',
-  'package.json repository must point to the main IdenaAI repo'
+    packageJson.repository.url ===
+      'https://github.com/ubiubi18/IdenaArc-p2p.git',
+  'package.json repository must point to the IdenaArc-p2p repo'
 )
 requireCondition(
-  packageJson.homepage === 'https://github.com/ubiubi18/IdenaAI#readme',
-  'package.json homepage must point to the main IdenaAI repo'
+  packageJson.homepage === 'https://github.com/ubiubi18/IdenaArc-p2p#readme',
+  'package.json homepage must point to the IdenaArc-p2p repo'
 )
 requireCondition(
   packageJson.bugs &&
-    packageJson.bugs.url === 'https://github.com/ubiubi18/IdenaAI/issues',
-  'package.json bugs URL must point to the main IdenaAI repo'
+    packageJson.bugs.url === 'https://github.com/ubiubi18/IdenaArc-p2p/issues',
+  'package.json bugs URL must point to the IdenaArc-p2p repo'
 )
 requireCondition(
   packageJson.author === 'ubiubi18',
@@ -99,8 +100,8 @@ requireCondition(
     packageJson.build.publish[0] &&
     packageJson.build.publish[0].provider === 'github' &&
     packageJson.build.publish[0].owner === 'ubiubi18' &&
-    packageJson.build.publish[0].repo === 'IdenaAI',
-  'package.json build.publish must point to the IdenaAI GitHub release feed'
+    packageJson.build.publish[0].repo === 'IdenaArc-p2p',
+  'package.json build.publish must point to the IdenaArc-p2p GitHub release feed'
 )
 
 const buildFiles = new Set(
