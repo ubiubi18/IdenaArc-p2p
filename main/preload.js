@@ -1529,6 +1529,26 @@ const idenaArcBridge = Object.freeze({
       'idenaArc.verifyTraceBundle',
       sanitizeIdenaArcPayload(payload)
     ),
+  saveAnnotationBundle: (payload) =>
+    invokeCloneable(
+      'idenaArc.saveAnnotationBundle',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  verifyAnnotationBundle: (payload) =>
+    invokeCloneable(
+      'idenaArc.verifyAnnotationBundle',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  listAnnotationBundles: (payload) =>
+    invokeCloneable(
+      'idenaArc.listAnnotationBundles',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  exportTrainingDataset: (payload) =>
+    invokeCloneable(
+      'idenaArc.exportTrainingDataset',
+      sanitizeIdenaArcPayload(payload)
+    ),
   uploadTraceBundle: (payload) =>
     invokeCloneable(
       'idenaArc.uploadTraceBundle',

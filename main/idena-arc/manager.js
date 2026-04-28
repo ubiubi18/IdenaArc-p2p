@@ -25,10 +25,24 @@ const PROTOCOL = 'idena-arc-session-v0'
 const TRACE_PROTOCOL = 'idena-arc-trace-v0'
 const RESULT_PROTOCOL = 'idena-arc-result-v0'
 const RECORDING_PROTOCOL = 'idena-arc-recording-v0'
+const AGENT_LOG_PROTOCOL = 'idena-arc-agent-log-v0'
+const ANNOTATION_BUNDLE_PROTOCOL = 'idena-arc-annotation-bundle-v0'
+const HUMAN_RULE_ANNOTATION_PROTOCOL = 'idena-arc-hidden-rule-annotation-v0'
+const AI_SELF_ANNOTATION_PROTOCOL = 'idena-arc-ai-self-annotation-v0'
+const COMPARISON_ANNOTATION_PROTOCOL = 'idena-arc-comparison-annotation-v0'
+const TRAINING_EXAMPLE_PROTOCOL = 'idena-arc-training-example-v0'
+const TRAINING_DATASET_EXPORT_PROTOCOL = 'idena-arc-training-dataset-export-v0'
 const DEFAULT_PLAY_DURATION_MS = 3 * 60 * 1000
 const DEFAULT_GRACE_PERIOD_MS = 30 * 1000
 const DEFAULT_GENERATOR_VERSION = '0.1.0'
 const MAX_ACTIONS = 512
+const DEFAULT_CAPABILITY_TAGS = [
+  'spatial-planning',
+  'color-rule-inference',
+  'delayed-effect',
+  'object-transformation',
+  'causal-trigger',
+]
 const IDENA_ARC_PROOF_CONTRACT_PLACEHOLDER = '<idena-arc-proof-contract>'
 const ARC_ACTION_ALIASES = {
   move_up: 'ACTION1',
@@ -62,6 +76,278 @@ function safeId(value, fallback) {
 
 function trimString(value) {
   return String(value || '').trim()
+}
+
+function boundedString(value, maxLength = 2000) {
+  return trimString(value).slice(0, maxLength)
+}
+
+function normalizeStringList(value, {maxItems = 32, maxLength = 240} = {}) {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((item) => normalizeStringList(item, {maxItems: 1, maxLength}))
+      .slice(0, maxItems)
+  }
+
+  return String(value || '')
+    .split(/\r?\n|,/)
+    .map((item) => boundedString(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems)
+}
+
+function normalizeCapabilityTags(value) {
+  const tags = normalizeStringList(value, {maxItems: 16, maxLength: 80}).map(
+    (item) => safeId(item, '')
+  )
+
+  return Array.from(new Set(tags.filter(Boolean))).slice(0, 16)
+}
+
+function normalizeAnnotationStatus(value) {
+  return trimString(value).toLowerCase() === 'final' ? 'final' : 'draft'
+}
+
+function normalizeNullableInteger(value, {min = 0, max = MAX_ACTIONS} = {}) {
+  const parsed = Number.parseInt(value, 10)
+
+  if (!Number.isFinite(parsed)) {
+    return null
+  }
+
+  return Math.max(min, Math.min(max, parsed))
+}
+
+function normalizeDifficulty(value) {
+  const parsed = Number.parseInt(value, 10)
+
+  if (!Number.isFinite(parsed)) {
+    return null
+  }
+
+  return Math.max(1, Math.min(5, parsed))
+}
+
+function normalizeEvidenceEvents(value) {
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 64)
+      .map((item) => {
+        if (typeof item === 'string') {
+          return {
+            actionIndex: null,
+            t_ms: null,
+            description: boundedString(item, 400),
+          }
+        }
+
+        if (!item || typeof item !== 'object') {
+          return null
+        }
+
+        return {
+          actionIndex: normalizeNullableInteger(
+            item.actionIndex || item.action_index
+          ),
+          t_ms: normalizeNullableInteger(item.t_ms || item.tMs, {
+            min: 0,
+            max: Number.MAX_SAFE_INTEGER,
+          }),
+          description: boundedString(item.description || item.event, 600),
+          observationHash: boundedString(
+            item.observationHash || item.observation_hash,
+            96
+          ),
+        }
+      })
+      .filter((item) => item && item.description)
+  }
+
+  return normalizeStringList(value, {maxItems: 64, maxLength: 600}).map(
+    (description) => ({
+      actionIndex: null,
+      t_ms: null,
+      description,
+    })
+  )
+}
+
+function normalizeRecognitionMoment(value, fallbackActionIndex = null) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return {
+      actionIndex: normalizeNullableInteger(
+        value.actionIndex || value.action_index || fallbackActionIndex
+      ),
+      t_ms: normalizeNullableInteger(value.t_ms || value.tMs, {
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+      }),
+      description: boundedString(value.description || value.notes, 1000),
+    }
+  }
+
+  return {
+    actionIndex: normalizeNullableInteger(fallbackActionIndex),
+    t_ms: null,
+    description: boundedString(value, 1000),
+  }
+}
+
+function normalizeHumanRuleAnnotation(input = {}, context = {}) {
+  const capabilityTags = normalizeCapabilityTags(
+    input.capabilityTags || input.capability_tags
+  )
+
+  return {
+    protocol: HUMAN_RULE_ANNOTATION_PROTOCOL,
+    status: context.status,
+    sessionId: context.sessionId,
+    gameId: context.sessionId,
+    resultId: context.resultId,
+    participantId: context.participantId,
+    ruleHypotheses: normalizeStringList(
+      input.ruleHypotheses || input.rule_hypotheses
+    ),
+    confirmedRules: normalizeStringList(
+      input.confirmedRules || input.confirmed_rules
+    ),
+    evidenceEvents: normalizeEvidenceEvents(
+      input.evidenceEvents || input.evidence_events
+    ),
+    recognitionMoment: normalizeRecognitionMoment(
+      input.recognitionMoment || input.recognition_moment,
+      input.recognitionActionIndex || input.recognition_action_index
+    ),
+    wrongHypotheses: normalizeStringList(
+      input.wrongHypotheses || input.wrong_hypotheses
+    ),
+    strategyChange: boundedString(
+      input.strategyChange || input.strategy_change,
+      1600
+    ),
+    difficulty: normalizeDifficulty(input.difficulty),
+    teachingNotes: boundedString(input.teachingNotes || input.teaching_notes),
+    capabilityTags,
+  }
+}
+
+function normalizeAiSelfAnnotation(input = {}, context = {}) {
+  return {
+    protocol: AI_SELF_ANNOTATION_PROTOCOL,
+    status: context.status,
+    sessionId: context.sessionId,
+    gameId: context.sessionId,
+    resultId: context.resultId,
+    participantId: context.participantId,
+    attemptedHypotheses: normalizeStringList(
+      input.attemptedHypotheses || input.hypotheses
+    ),
+    evidenceUsed: normalizeStringList(input.evidenceUsed || input.evidence),
+    uncertaintyReducingActions: normalizeStringList(
+      input.uncertaintyReducingActions || input.uncertainty_reducing_actions
+    ),
+    repeatedLoops: normalizeStringList(
+      input.repeatedLoops || input.repeated_loops
+    ),
+    failedAbstractions: normalizeStringList(
+      input.failedAbstractions || input.failed_abstractions
+    ),
+    finalKnownState: boundedString(
+      input.finalKnownState || input.final_known_state,
+      1600
+    ),
+    stopReason: boundedString(input.stopReason || input.stop_reason, 1000),
+    missingCapability: boundedString(
+      input.missingCapability || input.missing_capability,
+      400
+    ),
+  }
+}
+
+function normalizeComparisonAnnotation(input = {}, context = {}) {
+  return {
+    protocol: COMPARISON_ANNOTATION_PROTOCOL,
+    status: context.status,
+    sessionId: context.sessionId,
+    gameId: context.sessionId,
+    resultId: context.resultId,
+    participantId: context.participantId,
+    humanVsAiGap: boundedString(
+      input.humanVsAiGap || input.human_vs_ai_gap,
+      1600
+    ),
+    capabilityTags: normalizeCapabilityTags(
+      input.capabilityTags || input.capability_tags
+    ),
+    suggestedAdapterTarget: boundedString(
+      input.suggestedAdapterTarget || input.suggested_adapter_target,
+      400
+    ),
+  }
+}
+
+function collectCapabilityTags(...sources) {
+  const tags = sources.flatMap((source) =>
+    normalizeCapabilityTags(source && source.capabilityTags)
+  )
+
+  return Array.from(new Set(tags)).slice(0, 16)
+}
+
+function hasAnnotationTrainingSignal(annotationPayload) {
+  const human = annotationPayload.humanRuleAnnotation || {}
+  const ai = annotationPayload.aiSelfAnnotation || {}
+
+  return Boolean(
+    (Array.isArray(human.confirmedRules) && human.confirmedRules.length) ||
+      (Array.isArray(human.wrongHypotheses) && human.wrongHypotheses.length) ||
+      (Array.isArray(ai.failedAbstractions) && ai.failedAbstractions.length)
+  )
+}
+
+function buildTrainingExample(annotationPayload, annotationHash, bundle) {
+  const human = annotationPayload.humanRuleAnnotation || {}
+  const ai = annotationPayload.aiSelfAnnotation || {}
+  const comparison = annotationPayload.comparisonAnnotation || {}
+  const trace = bundle.trace || {}
+  const result = bundle.result || {}
+  const capabilityTags = collectCapabilityTags(human, comparison)
+
+  return {
+    protocol: TRAINING_EXAMPLE_PROTOCOL,
+    source: 'idena-arc-local-annotation-v0',
+    access: 'local-only-private-by-default',
+    releasePolicy: 'private-by-default',
+    sessionId: annotationPayload.sessionId,
+    resultId: annotationPayload.resultId,
+    participantId: annotationPayload.participantId,
+    annotationHash,
+    traceHash: annotationPayload.traceHash,
+    recordingHash: annotationPayload.recordingHash,
+    agentLogHash: annotationPayload.agentLogHash,
+    finalSeedHash: annotationPayload.finalSeedHash,
+    generatorHash: result.generatorHash || null,
+    capabilityTags: capabilityTags.length
+      ? capabilityTags
+      : DEFAULT_CAPABILITY_TAGS,
+    metrics: {
+      score: typeof result.score === 'number' ? result.score : null,
+      actionCount: Array.isArray(trace.actions) ? trace.actions.length : 0,
+      replayVerified: true,
+    },
+    target: {
+      confirmedRules: human.confirmedRules || [],
+      wrongHypotheses: human.wrongHypotheses || [],
+      recognitionMoment: human.recognitionMoment || null,
+      strategyChange: human.strategyChange || '',
+      teachingNotes: human.teachingNotes || '',
+      aiFailedAbstractions: ai.failedAbstractions || [],
+      aiStopReason: ai.stopReason || '',
+      missingCapability: ai.missingCapability || '',
+      humanVsAiGap: comparison.humanVsAiGap || '',
+      suggestedAdapterTarget: comparison.suggestedAdapterTarget || '',
+    },
+  }
 }
 
 function normalizeProofMode(payload = {}, adapter = 'external') {
@@ -189,10 +475,19 @@ function normalizeAction(action) {
     return null
   }
 
-  return {
+  const normalized = {
     t_ms: Math.max(0, Math.trunc(Number(action.t_ms || action.tMs || 0) || 0)),
     action: name.slice(0, 80),
   }
+  const x = Number(action.x)
+  const y = Number(action.y)
+
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    normalized.x = Math.max(0, Math.min(63, Math.trunc(x)))
+    normalized.y = Math.max(0, Math.min(63, Math.trunc(y)))
+  }
+
+  return normalized
 }
 
 function normalizeActions(actions) {
@@ -203,6 +498,14 @@ function normalizeActions(actions) {
 }
 
 function arcActionName(action) {
+  const normalized = String(action || '')
+    .trim()
+    .toUpperCase()
+
+  if (/^ACTION[1-7]$/.test(normalized)) {
+    return normalized
+  }
+
   return (
     ARC_ACTION_ALIASES[
       String(action || '')
@@ -245,6 +548,12 @@ function gridFrameFromState(state = {}) {
   place(state.player, 'P')
 
   return frame
+}
+
+function frameToText(frame) {
+  return (Array.isArray(frame) ? frame : [])
+    .map((row) => (Array.isArray(row) ? row : []).map(String).join(''))
+    .join('\n')
 }
 
 function fallbackTimelineFromTrace(session, trace, replay) {
@@ -344,11 +653,92 @@ function buildReplayRecording({session, trace, replay}) {
   }
 }
 
+function buildAgentLog({session, trace, recording}) {
+  const gameId = session.sessionId
+  const participantId = trace.participantId || 'player'
+  const entries = Array.isArray(recording && recording.entries)
+    ? recording.entries
+    : []
+  const lines = [
+    '# IdenaArc agent log v0',
+    `protocol: ${AGENT_LOG_PROTOCOL}`,
+    'format: plain-text-log-v0',
+    'access: post-session-training-artifact',
+    'release_policy: embargo-until-submission-cutoff',
+    `session_id: ${gameId}`,
+    `participant_id: ${participantId}`,
+    `generator_hash: ${session.manifest.generator.hash}`,
+    `generator_version: ${session.manifest.generator.version}`,
+    `final_seed_hash: ${
+      session.finalSeed && session.finalSeed.finalSeedHash
+        ? session.finalSeed.finalSeedHash
+        : ''
+    }`,
+    `initial_state_hash: ${trace.initialStateHash || ''}`,
+    `final_state_hash: ${trace.finalStateHash || ''}`,
+    `score: ${typeof trace.score === 'number' ? trace.score : ''}`,
+    '',
+  ]
+  let previousScore = null
+
+  entries.forEach((entry, index) => {
+    const data = entry && entry.data ? entry.data : {}
+    const actionInput = data.action_input || null
+    const actionData = actionInput && actionInput.data ? actionInput.data : {}
+    const score = typeof data.score === 'number' ? data.score : null
+    const scoreDelta =
+      typeof score === 'number' && typeof previousScore === 'number'
+        ? score - previousScore
+        : null
+    const frameText = frameToText(data.frame)
+
+    lines.push(
+      `--- step ${index} ---`,
+      `timestamp: ${entry.timestamp || ''}`,
+      `phase: ${data.full_reset ? 'initial' : 'action'}`,
+      `t_ms: ${Number(actionData.t_ms || 0) || 0}`,
+      `action: ${actionData.action || 'RESET'}`,
+      `arc_action: ${actionData.arc_action || ''}`,
+      `score: ${typeof score === 'number' ? score : ''}`,
+      `score_delta: ${typeof scoreDelta === 'number' ? scoreDelta : ''}`,
+      `state_hash: ${data.state_hash || ''}`,
+      'frame:',
+      frameText || '<empty>',
+      `state: ${data.state ? canonicalJson(data.state) : 'null'}`,
+      ''
+    )
+
+    if (typeof score === 'number') {
+      previousScore = score
+    }
+  })
+
+  return {
+    protocol: AGENT_LOG_PROTOCOL,
+    format: 'plain-text-log-v0',
+    source: 'idena-arc-sidecar-replay',
+    access: 'post-session-training-artifact',
+    releasePolicy: 'embargo-until-submission-cutoff',
+    gameId,
+    participantId,
+    generatorHash: session.manifest.generator.hash,
+    generatorVersion: session.manifest.generator.version,
+    text: `${lines.join('\n').trimEnd()}\n`,
+  }
+}
+
 function buildRecordingFilename({session, trace, resultId}) {
   return `${safeId(session.sessionId, 'game')}.${safeId(
     trace.participantId,
     'player'
   )}.${MAX_ACTIONS}.${safeId(resultId, 'result')}.recording.jsonl`
+}
+
+function buildAgentLogFilename({session, trace, resultId}) {
+  return `${safeId(session.sessionId, 'game')}.${safeId(
+    trace.participantId,
+    'player'
+  )}.${MAX_ACTIONS}.${safeId(resultId, 'result')}.agent.log.txt`
 }
 
 function parseJsonOutput(stdout, stderr) {
@@ -391,6 +781,14 @@ function createIdenaArcManager({
     return path.join(resolveBaseDir(), 'traces')
   }
 
+  function annotationDir() {
+    return path.join(resolveBaseDir(), 'annotations')
+  }
+
+  function datasetDir() {
+    return path.join(resolveBaseDir(), 'training-datasets')
+  }
+
   function sessionPath(sessionId) {
     return path.join(relayDir(), `${safeId(sessionId, 'session')}.json`)
   }
@@ -403,7 +801,23 @@ function createIdenaArcManager({
     )
   }
 
+  function annotationBundlePath(sessionId, annotationId) {
+    return path.join(
+      annotationDir(),
+      safeId(sessionId, 'session'),
+      `${safeId(annotationId, 'annotation')}.json`
+    )
+  }
+
+  function trainingDatasetPath(exportId) {
+    return path.join(datasetDir(), `${safeId(exportId, 'export')}.json`)
+  }
+
   function recordingJsonlPath(sessionId, filename) {
+    return path.join(traceDir(), safeId(sessionId, 'session'), filename)
+  }
+
+  function agentLogPath(sessionId, filename) {
     return path.join(traceDir(), safeId(sessionId, 'session'), filename)
   }
 
@@ -492,7 +906,33 @@ function createIdenaArcManager({
     return data ? data.result : undefined
   }
 
-  function getGeneratorDescriptor() {
+  function getGeneratorDescriptor(payload = {}) {
+    const arcAgiGameId = safeId(
+      payload.arcAgiGameId || payload.publicGameId || payload.gameId,
+      ''
+    )
+
+    if (
+      payload.generatorKind === 'arc-agi-public-game-v0' ||
+      payload.generatorType === 'arc-agi-public-game-v0' ||
+      arcAgiGameId
+    ) {
+      const gameId = arcAgiGameId || 'ls20'
+      const gameVersion = safeId(payload.arcAgiGameVersion, '')
+      const fullGameId = gameVersion ? `${gameId}-${gameVersion}` : gameId
+
+      return {
+        cid: `arc-agi:${fullGameId}`,
+        hash: sha256Prefixed(`arc-agi-public-game-v0:${fullGameId}`),
+        version: DEFAULT_GENERATOR_VERSION,
+        kind: 'arc-agi-public-game-v0',
+        gameId: fullGameId,
+        license: 'official ARC-AGI Toolkit runtime integration',
+        sourcePolicy:
+          'Use through arc-agi/arcengine runtime. Do not vendor downloaded game sources unless their license metadata is present.',
+      }
+    }
+
     const hash = fs.existsSync(sidecarPath)
       ? sha256Prefixed(fs.readFileSync(sidecarPath))
       : null
@@ -501,6 +941,7 @@ function createIdenaArcManager({
       cid: 'local:python/idena_arc/arc_sidecar.py',
       hash,
       version: DEFAULT_GENERATOR_VERSION,
+      kind: 'idena-arc-local-grid-v0',
     }
   }
 
@@ -887,7 +1328,7 @@ function createIdenaArcManager({
           : DEFAULT_GRACE_PERIOD_MS)
     )
     const generator = {
-      ...getGeneratorDescriptor(),
+      ...getGeneratorDescriptor(payload),
       ...(payload.generator || {}),
     }
     const session = {
@@ -1215,6 +1656,9 @@ function createIdenaArcManager({
     const recordingHash = hashJsonPrefixed(recording)
     const recordingJsonlHash = sha256Prefixed(recording.jsonl)
     const recordingFilename = buildRecordingFilename({session, trace, resultId})
+    const agentLog = buildAgentLog({session, trace, recording})
+    const agentLogHash = sha256Prefixed(agentLog.text)
+    const agentLogFilename = buildAgentLogFilename({session, trace, resultId})
     const verified = replayVerified && (signatureValid || anchorValid)
     const bundle = {
       protocol: 'idena-arc-trace-bundle-v0',
@@ -1226,16 +1670,24 @@ function createIdenaArcManager({
       recordingHash,
       recordingJsonlHash,
       recordingFilename,
+      agentLogHash,
+      agentLogFilename,
       result,
       trace,
       replay,
       recording,
+      agentLog,
     }
 
     await writeJson(traceBundlePath(session.sessionId, resultId), bundle)
     await fs.outputFile(
       recordingJsonlPath(session.sessionId, recordingFilename),
       recording.jsonl,
+      'utf8'
+    )
+    await fs.outputFile(
+      agentLogPath(session.sessionId, agentLogFilename),
+      agentLog.text,
       'utf8'
     )
 
@@ -1250,6 +1702,8 @@ function createIdenaArcManager({
         recordingHash,
         recordingJsonlHash,
         recordingFilename,
+        agentLogHash,
+        agentLogFilename,
         verified,
         storedAt: isoNow(),
       })
@@ -1289,12 +1743,26 @@ function createIdenaArcManager({
     })
     const expectedRecordingHash = hashJsonPrefixed(expectedRecording)
     const expectedRecordingJsonlHash = sha256Prefixed(expectedRecording.jsonl)
+    const expectedAgentLog = buildAgentLog({
+      session,
+      trace: expectedTrace,
+      recording: expectedRecording,
+    })
+    const expectedAgentLogHash = sha256Prefixed(expectedAgentLog.text)
+    const expectedAgentLogObjectHash = hashJsonPrefixed(expectedAgentLog)
     const suppliedRecordingObjectHash = bundle.recording
       ? hashJsonPrefixed(bundle.recording)
       : null
     const suppliedRecordingJsonlHash =
       bundle.recording && typeof bundle.recording.jsonl === 'string'
         ? sha256Prefixed(bundle.recording.jsonl)
+        : null
+    const suppliedAgentLogObjectHash = bundle.agentLog
+      ? hashJsonPrefixed(bundle.agentLog)
+      : null
+    const suppliedAgentLogHash =
+      bundle.agentLog && typeof bundle.agentLog.text === 'string'
+        ? sha256Prefixed(bundle.agentLog.text)
         : null
     const recordingMatches =
       Boolean(bundle.recording) &&
@@ -1304,6 +1772,11 @@ function createIdenaArcManager({
         bundle.recordingHash === expectedRecordingHash) &&
       (!bundle.recordingJsonlHash ||
         bundle.recordingJsonlHash === expectedRecordingJsonlHash)
+    const agentLogMatches =
+      Boolean(bundle.agentLog) &&
+      suppliedAgentLogObjectHash === expectedAgentLogObjectHash &&
+      suppliedAgentLogHash === expectedAgentLogHash &&
+      (!bundle.agentLogHash || bundle.agentLogHash === expectedAgentLogHash)
     const resultPayload = {...bundle.result}
     const {signature, identityProof} = resultPayload
     delete resultPayload.signature
@@ -1319,14 +1792,293 @@ function createIdenaArcManager({
     )
 
     return {
-      ok: traceMatches && recordingMatches && (signatureValid || anchorValid),
+      ok:
+        traceMatches &&
+        recordingMatches &&
+        agentLogMatches &&
+        (signatureValid || anchorValid),
       traceMatches,
       recordingMatches,
+      agentLogMatches,
       recordingHash: expectedRecordingHash,
       recordingJsonlHash: expectedRecordingJsonlHash,
+      agentLogHash: expectedAgentLogHash,
       signatureValid,
       anchorValid,
       replay,
+    }
+  }
+
+  async function loadTraceBundleForAnnotation(payload = {}) {
+    if (payload.traceBundle || payload.bundle) {
+      return payload.traceBundle || payload.bundle
+    }
+
+    const {sessionId, resultId} = payload
+
+    if (!sessionId || !resultId) {
+      throw new Error('Session id and result id are required')
+    }
+
+    const bundle = await readJson(traceBundlePath(sessionId, resultId), null)
+
+    if (!bundle) {
+      throw new Error(`Trace bundle not found: ${sessionId}/${resultId}`)
+    }
+
+    return bundle
+  }
+
+  async function buildAnnotationBundle(payload = {}) {
+    const traceBundle = await loadTraceBundleForAnnotation(payload)
+    const traceVerification = await verifyTraceBundle({bundle: traceBundle})
+    const result = traceBundle.result || {}
+    const trace = traceBundle.trace || {}
+    const annotationStatus = normalizeAnnotationStatus(payload.status)
+    const resultId = traceBundle.resultId || result.resultId || payload.resultId
+    const sessionId = result.sessionId || trace.sessionId || payload.sessionId
+    const participantId =
+      trace.participantId || payload.participantId || result.playerAddress
+    const context = {
+      status: annotationStatus,
+      sessionId,
+      resultId,
+      participantId,
+    }
+    const humanRuleAnnotation = normalizeHumanRuleAnnotation(
+      payload.humanRuleAnnotation || {},
+      context
+    )
+    const aiSelfAnnotation = normalizeAiSelfAnnotation(
+      payload.aiSelfAnnotation || {},
+      context
+    )
+    const comparisonAnnotation = normalizeComparisonAnnotation(
+      payload.comparisonAnnotation || {},
+      context
+    )
+    const annotationPayload = {
+      protocol: ANNOTATION_BUNDLE_PROTOCOL,
+      access: 'local-only-private-by-default',
+      releasePolicy: 'private-by-default-explicit-publish-only',
+      status: annotationStatus,
+      sessionId,
+      resultId,
+      participantId,
+      createdAt: payload.createdAt || isoNow(),
+      updatedAt: payload.updatedAt || isoNow(),
+      traceHash: result.traceHash || null,
+      recordingHash: traceBundle.recordingHash || null,
+      recordingJsonlHash: traceBundle.recordingJsonlHash || null,
+      agentLogHash: traceBundle.agentLogHash || null,
+      finalSeedHash: result.finalSeedHash || null,
+      generatorHash: result.generatorHash || null,
+      humanRuleAnnotation,
+      aiSelfAnnotation,
+      comparisonAnnotation,
+    }
+    const annotationHash = hashJsonPrefixed(annotationPayload)
+    const traceHashesMatch =
+      annotationPayload.traceHash === result.traceHash &&
+      annotationPayload.recordingHash === traceBundle.recordingHash &&
+      annotationPayload.agentLogHash === traceBundle.agentLogHash &&
+      annotationPayload.finalSeedHash === result.finalSeedHash
+    const hasTrainingSignal = hasAnnotationTrainingSignal(annotationPayload)
+    const acceptedForTraining =
+      annotationStatus === 'final' &&
+      traceVerification.traceMatches &&
+      traceVerification.recordingMatches &&
+      traceVerification.agentLogMatches &&
+      traceHashesMatch &&
+      hasTrainingSignal
+    const trainingExample = acceptedForTraining
+      ? buildTrainingExample(annotationPayload, annotationHash, traceBundle)
+      : null
+
+    return {
+      protocol: 'idena-arc-annotation-record-v0',
+      annotationId: `${safeId(resultId, 'result')}-${annotationHash.slice(
+        7,
+        19
+      )}`,
+      annotationHash,
+      acceptedForTraining,
+      traceReplayVerified: Boolean(traceVerification.traceMatches),
+      recordingVerified: Boolean(traceVerification.recordingMatches),
+      agentLogVerified: Boolean(traceVerification.agentLogMatches),
+      traceHashesMatch,
+      hasTrainingSignal,
+      privateByDefault: true,
+      uploaded: false,
+      annotation: annotationPayload,
+      trainingExample,
+      verification: {
+        traceMatches: traceVerification.traceMatches,
+        recordingMatches: traceVerification.recordingMatches,
+        agentLogMatches: traceVerification.agentLogMatches,
+        signatureValid: traceVerification.signatureValid,
+        anchorValid: traceVerification.anchorValid,
+      },
+    }
+  }
+
+  async function saveAnnotationBundle(payload = {}) {
+    const bundle = await buildAnnotationBundle(payload)
+
+    await writeJson(
+      annotationBundlePath(bundle.annotation.sessionId, bundle.annotationId),
+      bundle
+    )
+
+    return {
+      ...bundle,
+      stored: {
+        namespace: 'idena-arc/annotations',
+        sessionId: bundle.annotation.sessionId,
+        filename: `${safeId(bundle.annotationId, 'annotation')}.json`,
+      },
+    }
+  }
+
+  async function verifyAnnotationBundle(payload = {}) {
+    const bundle =
+      payload.annotationBundle ||
+      payload.bundle ||
+      (payload.annotationPath
+        ? await readJson(payload.annotationPath, null)
+        : null) ||
+      (payload.sessionId && payload.annotationId
+        ? await readJson(
+            annotationBundlePath(payload.sessionId, payload.annotationId),
+            null
+          )
+        : null)
+
+    if (!bundle || !bundle.annotation) {
+      throw new Error('Annotation bundle is required')
+    }
+
+    const rebuilt = await buildAnnotationBundle({
+      ...bundle.annotation,
+      status: bundle.annotation.status,
+      traceBundle: payload.traceBundle,
+      sessionId: bundle.annotation.sessionId,
+      resultId: bundle.annotation.resultId,
+      humanRuleAnnotation: bundle.annotation.humanRuleAnnotation,
+      aiSelfAnnotation: bundle.annotation.aiSelfAnnotation,
+      comparisonAnnotation: bundle.annotation.comparisonAnnotation,
+      createdAt: bundle.annotation.createdAt,
+      updatedAt: bundle.annotation.updatedAt,
+    })
+    const suppliedAnnotationHash = hashJsonPrefixed(bundle.annotation)
+    const annotationHashMatches =
+      rebuilt.annotationHash === bundle.annotationHash &&
+      suppliedAnnotationHash === bundle.annotationHash
+
+    return {
+      ok:
+        annotationHashMatches &&
+        rebuilt.traceReplayVerified &&
+        rebuilt.recordingVerified &&
+        rebuilt.agentLogVerified,
+      annotationHashMatches,
+      acceptedForTraining: rebuilt.acceptedForTraining,
+      traceReplayVerified: rebuilt.traceReplayVerified,
+      recordingVerified: rebuilt.recordingVerified,
+      agentLogVerified: rebuilt.agentLogVerified,
+      traceHashesMatch: rebuilt.traceHashesMatch,
+      hasTrainingSignal: rebuilt.hasTrainingSignal,
+      annotationHash: rebuilt.annotationHash,
+      suppliedAnnotationHash,
+    }
+  }
+
+  async function listAnnotationBundles(payload = {}) {
+    const root = payload.sessionId
+      ? path.join(annotationDir(), safeId(payload.sessionId, 'session'))
+      : annotationDir()
+
+    await fs.ensureDir(root)
+    const files = payload.sessionId
+      ? (await fs.readdir(root)).map((file) => path.join(root, file))
+      : (
+          await Promise.all(
+            (
+              await fs.readdir(root)
+            ).map(async (entry) => {
+              const entryPath = path.join(root, entry)
+              const stat = await fs.stat(entryPath).catch(() => null)
+              return stat && stat.isDirectory()
+                ? (await fs.readdir(entryPath)).map((file) =>
+                    path.join(entryPath, file)
+                  )
+                : []
+            })
+          )
+        ).flat()
+    const bundles = await Promise.all(
+      files
+        .filter((file) => file.endsWith('.json'))
+        .map((file) => readJson(file, null))
+    )
+
+    return bundles
+      .filter(Boolean)
+      .sort((left, right) =>
+        String(
+          right.annotation && right.annotation.updatedAt
+            ? right.annotation.updatedAt
+            : ''
+        ).localeCompare(
+          String(
+            left.annotation && left.annotation.updatedAt
+              ? left.annotation.updatedAt
+              : ''
+          )
+        )
+      )
+  }
+
+  async function exportTrainingDataset(payload = {}) {
+    const bundles = payload.annotationBundle
+      ? [payload.annotationBundle]
+      : await listAnnotationBundles({sessionId: payload.sessionId})
+    const examples = bundles
+      .filter((bundle) => bundle && bundle.trainingExample)
+      .filter((bundle) =>
+        payload.includeDrafts ? true : bundle.annotation.status === 'final'
+      )
+      .map((bundle) => bundle.trainingExample)
+    const exportId =
+      payload.exportId ||
+      `idena-arc-training-${Date.now().toString(36)}-${examples.length}`
+    const dataset = {
+      protocol: TRAINING_DATASET_EXPORT_PROTOCOL,
+      exportId,
+      access: 'local-only-private-by-default',
+      releasePolicy: 'private-by-default-explicit-publish-only',
+      privateFieldsIncluded: false,
+      createdAt: isoNow(),
+      exampleCount: examples.length,
+      capabilityTags: Array.from(
+        new Set(examples.flatMap((example) => example.capabilityTags || []))
+      ).sort(),
+      examples,
+    }
+    const datasetHash = hashJsonPrefixed(dataset)
+
+    await writeJson(trainingDatasetPath(exportId), {
+      ...dataset,
+      datasetHash,
+    })
+
+    return {
+      ...dataset,
+      datasetHash,
+      stored: {
+        namespace: 'idena-arc/training-datasets',
+        filename: `${safeId(exportId, 'export')}.json`,
+      },
     }
   }
 
@@ -1407,6 +2159,10 @@ function createIdenaArcManager({
     generateGame,
     submitTrace,
     verifyTraceBundle,
+    saveAnnotationBundle,
+    verifyAnnotationBundle,
+    listAnnotationBundles,
+    exportTrainingDataset,
     uploadTraceBundle,
   }
 }

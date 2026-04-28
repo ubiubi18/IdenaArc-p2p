@@ -2686,6 +2686,22 @@ handleTrusted('idenaArc.verifyTraceBundle', async (_event, payload) =>
   idenaArcManager.verifyTraceBundle(payload)
 )
 
+handleTrusted('idenaArc.saveAnnotationBundle', async (_event, payload) =>
+  idenaArcManager.saveAnnotationBundle(payload)
+)
+
+handleTrusted('idenaArc.verifyAnnotationBundle', async (_event, payload) =>
+  idenaArcManager.verifyAnnotationBundle(payload)
+)
+
+handleTrusted('idenaArc.listAnnotationBundles', async (_event, payload) =>
+  idenaArcManager.listAnnotationBundles(payload)
+)
+
+handleTrusted('idenaArc.exportTrainingDataset', async (_event, payload) =>
+  idenaArcManager.exportTrainingDataset(payload)
+)
+
 handleTrusted('idenaArc.uploadTraceBundle', async (_event, payload) =>
   idenaArcManager.uploadTraceBundle(payload)
 )

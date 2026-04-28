@@ -18,6 +18,11 @@
       "type": "string",
       "pattern": "^[a-zA-Z0-9._:-]+\\.recording\\.jsonl$"
     },
+    "agentLogHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "agentLogFilename": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._:-]+\\.agent\\.log\\.txt$"
+    },
     "result": {
       "type": "object",
       "additionalProperties": true,
@@ -91,6 +96,23 @@
           "items": {"$ref": "#/$defs/recordingEntry"}
         },
         "jsonl": {"type": "string", "minLength": 1}
+      }
+    },
+    "agentLog": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["protocol", "format", "source", "access", "text"],
+      "properties": {
+        "protocol": {"const": "idena-arc-agent-log-v0"},
+        "format": {"const": "plain-text-log-v0"},
+        "source": {"type": "string", "minLength": 1},
+        "access": {"const": "post-session-training-artifact"},
+        "releasePolicy": {"const": "embargo-until-submission-cutoff"},
+        "gameId": {"type": "string", "minLength": 1},
+        "participantId": {"type": "string", "minLength": 1},
+        "generatorHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "generatorVersion": {"type": "string"},
+        "text": {"type": "string", "minLength": 1}
       }
     }
   },

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena-arc.local/protocol/idena-arc-hidden-rule-annotation.schema.json",
+  "title": "IdenaArc Hidden Rule Annotation",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "protocol",
+    "status",
+    "sessionId",
+    "resultId",
+    "participantId",
+    "traceHash",
+    "recordingHash",
+    "agentLogHash",
+    "finalSeedHash",
+    "humanRuleAnnotation",
+    "aiSelfAnnotation",
+    "comparisonAnnotation"
+  ],
+  "properties": {
+    "protocol": {"const": "idena-arc-annotation-bundle-v0"},
+    "access": {"const": "local-only-private-by-default"},
+    "releasePolicy": {"const": "private-by-default-explicit-publish-only"},
+    "status": {"enum": ["draft", "final"]},
+    "sessionId": {"type": "string", "minLength": 1},
+    "resultId": {"type": "string", "minLength": 1},
+    "participantId": {"type": "string", "minLength": 1},
+    "traceHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "recordingHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "recordingJsonlHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "agentLogHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "finalSeedHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "generatorHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "humanRuleAnnotation": {
+      "type": "object",
+      "required": ["protocol", "confirmedRules", "recognitionMoment"],
+      "properties": {
+        "protocol": {"const": "idena-arc-hidden-rule-annotation-v0"},
+        "status": {"enum": ["draft", "final"]},
+        "ruleHypotheses": {"type": "array", "items": {"type": "string"}},
+        "confirmedRules": {"type": "array", "items": {"type": "string"}},
+        "evidenceEvents": {"type": "array", "items": {"type": "object"}},
+        "recognitionMoment": {"type": "object"},
+        "wrongHypotheses": {"type": "array", "items": {"type": "string"}},
+        "strategyChange": {"type": "string"},
+        "difficulty": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
+        "teachingNotes": {"type": "string"},
+        "capabilityTags": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "aiSelfAnnotation": {"$ref": "#/$defs/aiSelfAnnotation"},
+    "comparisonAnnotation": {
+      "type": "object",
+      "required": ["protocol"],
+      "properties": {
+        "protocol": {"const": "idena-arc-comparison-annotation-v0"},
+        "status": {"enum": ["draft", "final"]},
+        "humanVsAiGap": {"type": "string"},
+        "capabilityTags": {"type": "array", "items": {"type": "string"}},
+        "suggestedAdapterTarget": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256Prefixed": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "aiSelfAnnotation": {
+      "type": "object",
+      "required": ["protocol"],
+      "properties": {
+        "protocol": {"const": "idena-arc-ai-self-annotation-v0"},
+        "status": {"enum": ["draft", "final"]},
+        "attemptedHypotheses": {"type": "array", "items": {"type": "string"}},
+        "evidenceUsed": {"type": "array", "items": {"type": "string"}},
+        "uncertaintyReducingActions": {"type": "array", "items": {"type": "string"}},
+        "repeatedLoops": {"type": "array", "items": {"type": "string"}},
+        "failedAbstractions": {"type": "array", "items": {"type": "string"}},
+        "finalKnownState": {"type": "string"},
+        "stopReason": {"type": "string"},
+        "missingCapability": {"type": "string"}
+      }
+    }
+  }
+}

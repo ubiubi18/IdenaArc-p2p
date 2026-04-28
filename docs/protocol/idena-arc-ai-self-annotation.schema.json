@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena-arc.local/protocol/idena-arc-ai-self-annotation.schema.json",
+  "title": "IdenaArc AI Self Annotation",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["protocol", "sessionId", "resultId", "participantId"],
+  "properties": {
+    "protocol": {"const": "idena-arc-ai-self-annotation-v0"},
+    "status": {"enum": ["draft", "final"]},
+    "sessionId": {"type": "string", "minLength": 1},
+    "gameId": {"type": "string"},
+    "resultId": {"type": "string", "minLength": 1},
+    "participantId": {"type": "string", "minLength": 1},
+    "attemptedHypotheses": {"type": "array", "items": {"type": "string"}},
+    "evidenceUsed": {"type": "array", "items": {"type": "string"}},
+    "uncertaintyReducingActions": {"type": "array", "items": {"type": "string"}},
+    "repeatedLoops": {"type": "array", "items": {"type": "string"}},
+    "failedAbstractions": {"type": "array", "items": {"type": "string"}},
+    "finalKnownState": {"type": "string"},
+    "stopReason": {"type": "string"},
+    "missingCapability": {"type": "string"}
+  }
+}

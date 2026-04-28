@@ -71,11 +71,25 @@ describe('idena-arc manager', () => {
     expect(submitted.bundle.recordingHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(submitted.bundle.recordingJsonlHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(submitted.bundle.recordingFilename).toMatch(/\.recording\.jsonl$/)
+    expect(submitted.bundle.agentLogHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(submitted.bundle.agentLogFilename).toMatch(/\.agent\.log\.txt$/)
     expect(submitted.bundle.recording).toMatchObject({
       protocol: 'idena-arc-recording-v0',
       format: 'arc-style-jsonl-v0',
       gameId: created.sessionId,
     })
+    expect(submitted.bundle.agentLog).toMatchObject({
+      protocol: 'idena-arc-agent-log-v0',
+      format: 'plain-text-log-v0',
+      access: 'post-session-training-artifact',
+      gameId: created.sessionId,
+    })
+    expect(submitted.bundle.agentLog.text).toContain(
+      'release_policy: embargo-until-submission-cutoff'
+    )
+    expect(submitted.bundle.agentLog.text).toContain('action: move_right')
+    expect(submitted.bundle.agentLog.text).toContain('arc_action: ACTION4')
+    expect(submitted.bundle.agentLog.text).toContain('frame:\n')
     expect(submitted.bundle.recording.entries[0].data.full_reset).toBe(true)
     expect(
       submitted.bundle.recording.entries[1].data.action_input.data
@@ -98,8 +112,20 @@ describe('idena-arc manager', () => {
         'utf8'
       )
     ).resolves.toBe(submitted.bundle.recording.jsonl)
+    await expect(
+      fs.readFile(
+        path.join(
+          baseDir,
+          'traces',
+          created.sessionId,
+          submitted.bundle.agentLogFilename
+        ),
+        'utf8'
+      )
+    ).resolves.toBe(submitted.bundle.agentLog.text)
     expect(verified.ok).toBe(true)
     expect(verified.recordingMatches).toBe(true)
+    expect(verified.agentLogMatches).toBe(true)
 
     const badHash = {
       ...submitted.bundle,
@@ -124,11 +150,133 @@ describe('idena-arc manager', () => {
     const staleRejected = await manager.verifyTraceBundle({
       bundle: staleRecording,
     })
+    const staleAgentLog = {
+      ...submitted.bundle,
+      agentLog: {
+        ...submitted.bundle.agentLog,
+        text: submitted.bundle.agentLog.text.replace(
+          'action: move_right',
+          'action: move_left'
+        ),
+      },
+    }
+    const staleAgentRejected = await manager.verifyTraceBundle({
+      bundle: staleAgentLog,
+    })
 
     expect(rejected.ok).toBe(false)
     expect(rejected.recordingMatches).toBe(false)
     expect(staleRejected.ok).toBe(false)
     expect(staleRejected.recordingMatches).toBe(false)
+    expect(staleAgentRejected.ok).toBe(false)
+    expect(staleAgentRejected.agentLogMatches).toBe(false)
+  })
+
+  it('stores private hidden-rule annotations and exports training examples only after final verification', async () => {
+    const created = await manager.createSession({
+      participantId: 'alice',
+      playDurationMs: 10000,
+    })
+    const committed = await manager.commitSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+    })
+
+    await manager.revealSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+      salt: committed.salt,
+    })
+    await manager.generateGame({
+      sessionId: created.sessionId,
+      reveals: [{participantId: 'alice', salt: committed.salt}],
+    })
+
+    const submitted = await manager.submitTrace({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+      signerPrivateKey: privateKey,
+      actions: ['move_right', 'move_down'],
+    })
+    const draft = await manager.saveAnnotationBundle({
+      status: 'draft',
+      traceBundle: submitted.bundle,
+      humanRuleAnnotation: {
+        confirmedRules: 'The target is reached by moving on the grid.',
+        recognitionMoment: {
+          actionIndex: 1,
+          description: 'The score increased after moving toward the target.',
+        },
+        capabilityTags: 'spatial-planning, causal-trigger',
+      },
+      aiSelfAnnotation: {
+        failedAbstractions: 'The random baseline did not model distance.',
+        stopReason: 'Action budget reached.',
+      },
+      comparisonAnnotation: {
+        humanVsAiGap: 'The human used the visible target and obstacle.',
+        capabilityTags: 'spatial-planning',
+        suggestedAdapterTarget: 'grid-distance planner',
+      },
+    })
+    const final = await manager.saveAnnotationBundle({
+      ...draft.annotation,
+      status: 'final',
+      traceBundle: submitted.bundle,
+      humanRuleAnnotation: draft.annotation.humanRuleAnnotation,
+      aiSelfAnnotation: draft.annotation.aiSelfAnnotation,
+      comparisonAnnotation: draft.annotation.comparisonAnnotation,
+    })
+    const verified = await manager.verifyAnnotationBundle({
+      annotationBundle: final,
+      traceBundle: submitted.bundle,
+    })
+    const dataset = await manager.exportTrainingDataset({
+      annotationBundle: final,
+    })
+
+    expect(draft.acceptedForTraining).toBe(false)
+    expect(final.annotationHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(final.acceptedForTraining).toBe(true)
+    expect(final.privateByDefault).toBe(true)
+    expect(final.uploaded).toBe(false)
+    expect(final.trainingExample).toMatchObject({
+      protocol: 'idena-arc-training-example-v0',
+      access: 'local-only-private-by-default',
+      traceHash: submitted.bundle.result.traceHash,
+      recordingHash: submitted.bundle.recordingHash,
+      agentLogHash: submitted.bundle.agentLogHash,
+    })
+    expect(verified).toMatchObject({
+      ok: true,
+      annotationHashMatches: true,
+      acceptedForTraining: true,
+      traceReplayVerified: true,
+      recordingVerified: true,
+      agentLogVerified: true,
+    })
+    expect(dataset).toMatchObject({
+      protocol: 'idena-arc-training-dataset-export-v0',
+      privateFieldsIncluded: false,
+      exampleCount: 1,
+    })
+    expect(dataset.datasetHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(dataset.examples[0].capabilityTags).toContain('spatial-planning')
+
+    const staleAnnotation = {
+      ...final,
+      annotation: {
+        ...final.annotation,
+        traceHash: `sha256:${'1'.repeat(64)}`,
+      },
+    }
+    const rejected = await manager.verifyAnnotationBundle({
+      annotationBundle: staleAnnotation,
+      traceBundle: submitted.bundle,
+    })
+
+    expect(rejected.ok).toBe(false)
+    expect(rejected.annotationHashMatches).toBe(false)
   })
 
   it('uses external RPC adapters for identity and IPFS calls', async () => {

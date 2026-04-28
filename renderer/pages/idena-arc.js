@@ -38,6 +38,29 @@ import {
 const DEFAULT_ACTIONS = ['move_right', 'move_down', 'move_down'].join('\n')
 const DEFAULT_RPC_URL = 'http://127.0.0.1:9009'
 const DEFAULT_PLAY_DURATION_MS = 3 * 60 * 1000
+const ARC_PUBLIC_GAMES = [
+  {id: 'ls20', label: 'ls20 · Agent reasoning'},
+  {id: 'ft09', label: 'ft09 · Elementary logic'},
+  {id: 'vc33', label: 'vc33 · Orchestration'},
+]
+const ARC_COLOR_PALETTE = [
+  '#000000',
+  '#0074d9',
+  '#ff4136',
+  '#2ecc40',
+  '#ffdc00',
+  '#aaaaaa',
+  '#f012be',
+  '#ff851b',
+  '#7fdbff',
+  '#870c25',
+  '#ffffff',
+  '#39cccc',
+  '#b10dc9',
+  '#01ff70',
+  '#85144b',
+  '#001f3f',
+]
 const LOCAL_ACTION_DELTAS = {
   move_up: {x: 0, y: -1},
   up: {x: 0, y: -1},
@@ -121,14 +144,35 @@ function getIdenaArcBridge() {
 function parseActions(value) {
   return String(value || '')
     .split('\n')
-    .map((line, index) => ({
-      t_ms: index * 1000,
-      action: line.trim(),
-    }))
+    .map((line, index) => {
+      const parts = line.trim().split(/\s+/).filter(Boolean)
+      const action = parts[0] || ''
+      const x = Number(parts[1])
+      const y = Number(parts[2])
+      const item = {
+        t_ms: index * 1000,
+        action,
+      }
+
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        item.x = Math.max(0, Math.min(63, Math.trunc(x)))
+        item.y = Math.max(0, Math.min(63, Math.trunc(y)))
+      }
+
+      return item
+    })
     .filter((item) => item.action)
 }
 
 function arcActionName(action) {
+  const normalized = String(action || '')
+    .trim()
+    .toUpperCase()
+
+  if (/^ACTION[1-7]$/.test(normalized)) {
+    return normalized
+  }
+
   return (
     ARC_ACTION_ALIASES[
       String(action || '')
@@ -198,7 +242,11 @@ function replayLocalActions(initialState, actionLog) {
 
 function buildActionsText(actionLog) {
   return (Array.isArray(actionLog) ? actionLog : [])
-    .map((item) => item.action)
+    .map((item) =>
+      typeof item.x === 'number' && typeof item.y === 'number'
+        ? `${item.action} ${item.x} ${item.y}`
+        : item.action
+    )
     .filter(Boolean)
     .join('\n')
 }
@@ -493,6 +541,12 @@ function demoFrameFromState(state = {}) {
   return frame
 }
 
+function demoFrameToText(frame) {
+  return (Array.isArray(frame) ? frame : [])
+    .map((row) => (Array.isArray(row) ? row : []).map(String).join(''))
+    .join('\n')
+}
+
 function buildBrowserRecording(session, trace, replay) {
   const timeline = Array.isArray(replay.timeline) ? replay.timeline : []
   const entries = timeline.map((point, index) => {
@@ -538,6 +592,91 @@ function buildBrowserRecording(session, trace, replay) {
     generatorVersion: session.manifest && session.manifest.generator.version,
     entries,
     jsonl: jsonl ? `${jsonl}\n` : '',
+  }
+}
+
+function buildBrowserAgentLog(session, trace, recording) {
+  const entries = Array.isArray(recording && recording.entries)
+    ? recording.entries
+    : []
+  const lines = [
+    '# IdenaArc agent log v0',
+    'protocol: idena-arc-agent-log-v0',
+    'format: plain-text-log-v0',
+    'access: post-session-training-artifact',
+    'release_policy: embargo-until-submission-cutoff',
+    `session_id: ${session.sessionId}`,
+    `participant_id: ${trace.participantId || 'player'}`,
+    `generator_hash: ${
+      session.manifest && session.manifest.generator
+        ? session.manifest.generator.hash
+        : ''
+    }`,
+    `generator_version: ${
+      session.manifest && session.manifest.generator
+        ? session.manifest.generator.version
+        : ''
+    }`,
+    `final_seed_hash: ${
+      session.finalSeed && session.finalSeed.finalSeedHash
+        ? session.finalSeed.finalSeedHash
+        : ''
+    }`,
+    `initial_state_hash: ${trace.initialStateHash || ''}`,
+    `final_state_hash: ${trace.finalStateHash || ''}`,
+    `score: ${typeof trace.score === 'number' ? trace.score : ''}`,
+    '',
+  ]
+  let previousScore = null
+
+  entries.forEach((entry, index) => {
+    const data = entry && entry.data ? entry.data : {}
+    const actionInput = data.action_input || null
+    const actionData = actionInput && actionInput.data ? actionInput.data : {}
+    const score = typeof data.score === 'number' ? data.score : null
+    const scoreDelta =
+      typeof score === 'number' && typeof previousScore === 'number'
+        ? score - previousScore
+        : null
+
+    lines.push(
+      `--- step ${index} ---`,
+      `timestamp: ${entry.timestamp || ''}`,
+      `phase: ${data.full_reset ? 'initial' : 'action'}`,
+      `t_ms: ${Number(actionData.t_ms || 0) || 0}`,
+      `action: ${actionData.action || 'RESET'}`,
+      `arc_action: ${actionData.arc_action || ''}`,
+      `score: ${typeof score === 'number' ? score : ''}`,
+      `score_delta: ${typeof scoreDelta === 'number' ? scoreDelta : ''}`,
+      `state_hash: ${data.state_hash || ''}`,
+      'frame:',
+      demoFrameToText(data.frame) || '<empty>',
+      `state: ${JSON.stringify(data.state || null)}`,
+      ''
+    )
+
+    if (typeof score === 'number') {
+      previousScore = score
+    }
+  })
+
+  return {
+    protocol: 'idena-arc-agent-log-v0',
+    format: 'plain-text-log-v0',
+    source: 'idena-arc-browser-demo-replay',
+    access: 'post-session-training-artifact',
+    releasePolicy: 'embargo-until-submission-cutoff',
+    gameId: session.sessionId,
+    participantId: trace.participantId || 'player',
+    generatorHash:
+      session.manifest && session.manifest.generator
+        ? session.manifest.generator.hash
+        : null,
+    generatorVersion:
+      session.manifest && session.manifest.generator
+        ? session.manifest.generator.version
+        : null,
+    text: `${lines.join('\n').trimEnd()}\n`,
   }
 }
 
@@ -725,8 +864,10 @@ function createBrowserDemoBridge() {
         feedback: payload.feedback || {},
       }
       const recording = buildBrowserRecording(session, trace, replay)
+      const agentLog = buildBrowserAgentLog(session, trace, recording)
       const resultId = `${participant.participantId}-${Date.now().toString(36)}`
       const recordingFilename = `${session.sessionId}.${participant.participantId}.512.${resultId}.recording.jsonl`
+      const agentLogFilename = `${session.sessionId}.${participant.participantId}.512.${resultId}.agent.log.txt`
       const bundle = {
         protocol: 'idena-arc-trace-bundle-v0',
         resultId,
@@ -737,6 +878,8 @@ function createBrowserDemoBridge() {
         recordingHash: `demo:${simpleHashHex(JSON.stringify(recording))}`,
         recordingJsonlHash: `demo:${simpleHashHex(recording.jsonl)}`,
         recordingFilename,
+        agentLogHash: `demo:${simpleHashHex(agentLog.text)}`,
+        agentLogFilename,
         result: {
           protocol: 'idena-arc-result-v0',
           sessionId: session.sessionId,
@@ -759,6 +902,7 @@ function createBrowserDemoBridge() {
         trace,
         replay,
         recording,
+        agentLog,
       }
 
       session.results = (session.results || []).concat({
@@ -779,6 +923,96 @@ function createBrowserDemoBridge() {
       signatureValid: false,
       anchorValid: false,
     }),
+    saveAnnotationBundle: async (payload = {}) => {
+      const traceBundle = payload.traceBundle || payload.bundle || {}
+      const result = traceBundle.result || {}
+      const trace = traceBundle.trace || {}
+      const status = payload.status === 'final' ? 'final' : 'draft'
+      const annotation = {
+        protocol: 'idena-arc-annotation-bundle-v0',
+        access: 'local-only-private-by-default',
+        releasePolicy: 'private-by-default-explicit-publish-only',
+        status,
+        sessionId: result.sessionId || trace.sessionId || payload.sessionId,
+        resultId: traceBundle.resultId || payload.resultId,
+        participantId: trace.participantId || payload.participantId || 'player',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        traceHash: result.traceHash || null,
+        recordingHash: traceBundle.recordingHash || null,
+        recordingJsonlHash: traceBundle.recordingJsonlHash || null,
+        agentLogHash: traceBundle.agentLogHash || null,
+        finalSeedHash: result.finalSeedHash || null,
+        generatorHash: result.generatorHash || null,
+        humanRuleAnnotation: payload.humanRuleAnnotation || {},
+        aiSelfAnnotation: payload.aiSelfAnnotation || {},
+        comparisonAnnotation: payload.comparisonAnnotation || {},
+      }
+      const annotationHash = `demo:${simpleHashHex(JSON.stringify(annotation))}`
+      const hasTrainingSignal = Boolean(
+        (annotation.humanRuleAnnotation.confirmedRules || '').trim() ||
+          (annotation.humanRuleAnnotation.wrongHypotheses || '').trim() ||
+          (annotation.aiSelfAnnotation.failedAbstractions || '').trim()
+      )
+      const acceptedForTraining = status === 'final' && hasTrainingSignal
+      const trainingExample = acceptedForTraining
+        ? {
+            protocol: 'idena-arc-training-example-v0',
+            source: 'idena-arc-browser-demo-annotation-v0',
+            access: 'local-only-private-by-default',
+            annotationHash,
+            traceHash: annotation.traceHash,
+            capabilityTags: String(
+              annotation.comparisonAnnotation.capabilityTags || ''
+            )
+              .split(',')
+              .map((item) => item.trim())
+              .filter(Boolean),
+          }
+        : null
+
+      return {
+        protocol: 'idena-arc-annotation-record-v0',
+        annotationId: `browser-${Date.now().toString(36)}`,
+        annotationHash,
+        acceptedForTraining,
+        traceReplayVerified: true,
+        recordingVerified: Boolean(traceBundle.recording),
+        agentLogVerified: Boolean(traceBundle.agentLog),
+        traceHashesMatch: true,
+        hasTrainingSignal,
+        privateByDefault: true,
+        uploaded: false,
+        annotation,
+        trainingExample,
+        stored: {
+          namespace: 'browser-demo-memory',
+          filename: 'not-persisted.json',
+        },
+      }
+    },
+    verifyAnnotationBundle: async (payload = {}) => ({
+      ok: Boolean(payload.annotationBundle || payload.bundle),
+      annotationHashMatches: true,
+      acceptedForTraining: Boolean(
+        (payload.annotationBundle || payload.bundle || {}).acceptedForTraining
+      ),
+    }),
+    listAnnotationBundles: async () => [],
+    exportTrainingDataset: async (payload = {}) => {
+      const bundle = payload.annotationBundle || {}
+      const examples = bundle.trainingExample ? [bundle.trainingExample] : []
+      return {
+        protocol: 'idena-arc-training-dataset-export-v0',
+        exportId: `browser-${Date.now().toString(36)}`,
+        access: 'local-only-private-by-default',
+        releasePolicy: 'private-by-default-explicit-publish-only',
+        privateFieldsIncluded: false,
+        exampleCount: examples.length,
+        examples,
+        datasetHash: `demo:${simpleHashHex(JSON.stringify(examples))}`,
+      }
+    },
     uploadTraceBundle: async () => ({
       ok: false,
       error: 'Browser demo mode cannot upload trace bundles.',
@@ -917,6 +1151,121 @@ function DirectionButton({control, disabled, onAction}) {
   )
 }
 
+function ArcAgiFrameBoard({
+  game,
+  state,
+  playing,
+  actionLog,
+  onStart,
+  onAction,
+}) {
+  const frame = Array.isArray(state && state.frame) ? state.frame : []
+  let actionSpace = []
+
+  if (Array.isArray(state && state.availableActions)) {
+    actionSpace = state.availableActions
+  } else if (Array.isArray(game && game.actionSpace)) {
+    actionSpace = game.actionSpace.map((item) => item.arcAction || item.name)
+  }
+  const width = Math.max(...frame.map((row) => row.length), 0)
+  const height = frame.length
+  const canAct = Boolean(game && playing && !state.completed && !state.gameOver)
+  let startLabel = 'Start'
+
+  if (playing) {
+    startLabel = 'Playing'
+  } else if (actionLog.length) {
+    startLabel = 'Resume'
+  }
+
+  if (!frame.length) {
+    return (
+      <Stack
+        spacing={3}
+        borderWidth="1px"
+        borderStyle="dashed"
+        borderColor="orange.200"
+        borderRadius="md"
+        p={5}
+        bg="orange.010"
+      >
+        <Text fontWeight={600}>ARC-AGI frame unavailable</Text>
+        <Text color="muted" fontSize="sm">
+          Install the optional Python 3.12 `arc-agi` runtime and make the
+          selected public game available locally to render real ARC-AGI frames.
+        </Text>
+      </Stack>
+    )
+  }
+
+  return (
+    <Stack spacing={4}>
+      <Flex justify="space-between" gap={3} flexWrap="wrap">
+        <Box>
+          <Text fontWeight={600}>{game.title || state.gameId}</Text>
+          <HStack mt={1} color="muted" fontSize="sm" spacing={2}>
+            <Text>
+              {width}x{height}
+            </Text>
+            <Text>{state.state || 'state unknown'}</Text>
+            <Text>{actionLog.length} actions</Text>
+          </HStack>
+        </Box>
+        <PrimaryButton onClick={onStart} isDisabled={!game}>
+          {startLabel}
+        </PrimaryButton>
+      </Flex>
+
+      <Box overflowX="auto">
+        <Grid
+          templateColumns={`repeat(${width}, minmax(10px, 1fr))`}
+          gap="1px"
+          w="min(100%, 640px)"
+          borderWidth="1px"
+          borderColor="gray.300"
+          bg="gray.300"
+        >
+          {frame.flatMap((row, y) =>
+            row.map((value, x) => (
+              <Box
+                as="button"
+                type="button"
+                key={`${x}:${y}`}
+                aria-label={`ARC cell ${x}, ${y}, value ${value}`}
+                h={['12px', '14px']}
+                minW="10px"
+                bg={ARC_COLOR_PALETTE[Math.abs(Number(value) || 0) % 16]}
+                cursor={canAct ? 'crosshair' : 'default'}
+                onClick={() => canAct && onAction('ACTION6', {x, y})}
+              />
+            ))
+          )}
+        </Grid>
+      </Box>
+
+      <HStack spacing={2} flexWrap="wrap">
+        {['ACTION1', 'ACTION2', 'ACTION3', 'ACTION4', 'ACTION5', 'ACTION7']
+          .filter(
+            (action) => !actionSpace.length || actionSpace.includes(action)
+          )
+          .map((action) => (
+            <SecondaryButton
+              key={action}
+              isDisabled={!canAct}
+              onClick={() => onAction(action)}
+            >
+              {action}
+            </SecondaryButton>
+          ))}
+      </HStack>
+      <Text color="muted" fontSize="sm">
+        Public ARC-AGI games are used here as local annotation fixtures. They do
+        not replace IdenaArc hidden-seed sessions.
+      </Text>
+    </Stack>
+  )
+}
+
 function ArcGameBoard({
   game,
   state,
@@ -990,6 +1339,23 @@ function ArcGameBoard({
           playable board appears here and records the trace automatically.
         </Text>
       </Stack>
+    )
+  }
+
+  if (
+    game &&
+    game.renderHints &&
+    game.renderHints.renderer === 'arc-agi-frame-v0'
+  ) {
+    return (
+      <ArcAgiFrameBoard
+        game={game}
+        state={state || game.initialState}
+        playing={playing}
+        actionLog={actionLog}
+        onStart={onStart}
+        onAction={onAction}
+      />
     )
   }
 
@@ -1199,6 +1565,8 @@ export default function IdenaArcPage() {
   const [proofTxHash, setProofTxHash] = React.useState('')
   const [proofCid, setProofCid] = React.useState('')
   const [proofContract, setProofContract] = React.useState('')
+  const [gameSource, setGameSource] = React.useState('local-grid')
+  const [arcAgiGameId, setArcAgiGameId] = React.useState('ls20')
   const [sessionId, setSessionId] = React.useState('')
   const [participantId, setParticipantId] = React.useState('player-1')
   const [salt, setSalt] = React.useState('')
@@ -1214,6 +1582,25 @@ export default function IdenaArcPage() {
   const [actionLog, setActionLog] = React.useState([])
   const [selectedCell, setSelectedCell] = React.useState(null)
   const [bundle, setBundle] = React.useState(null)
+  const [annotationStatus, setAnnotationStatus] = React.useState('draft')
+  const [confirmedRules, setConfirmedRules] = React.useState('')
+  const [ruleHypotheses, setRuleHypotheses] = React.useState('')
+  const [wrongHypotheses, setWrongHypotheses] = React.useState('')
+  const [recognitionActionIndex, setRecognitionActionIndex] = React.useState('')
+  const [recognitionNotes, setRecognitionNotes] = React.useState('')
+  const [evidenceEvents, setEvidenceEvents] = React.useState('')
+  const [strategyChange, setStrategyChange] = React.useState('')
+  const [teachingNotes, setTeachingNotes] = React.useState('')
+  const [aiFailedAbstractions, setAiFailedAbstractions] = React.useState('')
+  const [aiStopReason, setAiStopReason] = React.useState('')
+  const [missingCapability, setMissingCapability] = React.useState('')
+  const [humanVsAiGap, setHumanVsAiGap] = React.useState('')
+  const [capabilityTags, setCapabilityTags] = React.useState(
+    'spatial-planning, causal-trigger'
+  )
+  const [suggestedAdapterTarget, setSuggestedAdapterTarget] = React.useState('')
+  const [annotationBundle, setAnnotationBundle] = React.useState(null)
+  const [trainingDataset, setTrainingDataset] = React.useState(null)
   const [lastResult, setLastResult] = React.useState(null)
   const adapterTouchedRef = React.useRef(false)
 
@@ -1250,6 +1637,11 @@ export default function IdenaArcPage() {
       proofTxHash,
       proofCid,
       proofContract,
+      generatorKind:
+        gameSource === 'arc-agi-public'
+          ? 'arc-agi-public-game-v0'
+          : 'idena-arc-local-grid-v0',
+      arcAgiGameId: gameSource === 'arc-agi-public' ? arcAgiGameId : '',
       participantId,
       sessionId,
     }),
@@ -1262,6 +1654,8 @@ export default function IdenaArcPage() {
       proofTxHash,
       proofCid,
       proofContract,
+      gameSource,
+      arcAgiGameId,
       participantId,
       sessionId,
     ]
@@ -1275,6 +1669,10 @@ export default function IdenaArcPage() {
     const jsonlLines = bundle.recording.jsonl
       ? bundle.recording.jsonl.trim().split('\n').filter(Boolean).length
       : 0
+    const agentLogLines =
+      bundle.agentLog && bundle.agentLog.text
+        ? bundle.agentLog.text.trim().split('\n').filter(Boolean).length
+        : 0
 
     return {
       protocol: bundle.recording.protocol,
@@ -1283,6 +1681,9 @@ export default function IdenaArcPage() {
       hash: bundle.recordingHash,
       jsonlHash: bundle.recordingJsonlHash,
       filename: bundle.recordingFilename,
+      agentLogHash: bundle.agentLogHash,
+      agentLogFilename: bundle.agentLogFilename,
+      agentLogLines,
       lastArcAction:
         bundle.recording.entries &&
         bundle.recording.entries
@@ -1298,6 +1699,86 @@ export default function IdenaArcPage() {
           .slice(-1)[0],
     }
   }, [bundle])
+
+  const actionTimeline = React.useMemo(() => {
+    if (!bundle || !bundle.recording || !bundle.recording.entries) {
+      return actionLog.map((item, index) => ({
+        index,
+        t_ms: item.t_ms,
+        action: item.action,
+        arcAction: arcActionName(item.action) || item.action,
+        stateHash: null,
+        score: null,
+      }))
+    }
+
+    return bundle.recording.entries
+      .map((entry, index) => {
+        const data = entry && entry.data ? entry.data : {}
+        const actionInput = data.action_input || null
+        const actionData =
+          actionInput && actionInput.data ? actionInput.data : {}
+
+        return {
+          index,
+          t_ms: Number(actionData.t_ms || 0) || 0,
+          action: actionData.action || 'RESET',
+          arcAction: actionData.arc_action || null,
+          stateHash: data.state_hash || null,
+          score: data.score,
+        }
+      })
+      .slice(0, 24)
+  }, [actionLog, bundle])
+
+  const annotationPayload = React.useMemo(
+    () => ({
+      status: annotationStatus,
+      traceBundle: bundle,
+      humanRuleAnnotation: {
+        ruleHypotheses,
+        confirmedRules,
+        evidenceEvents,
+        recognitionMoment: {
+          actionIndex: recognitionActionIndex,
+          description: recognitionNotes,
+        },
+        wrongHypotheses,
+        strategyChange,
+        difficulty: 3,
+        teachingNotes,
+        capabilityTags,
+      },
+      aiSelfAnnotation: {
+        failedAbstractions: aiFailedAbstractions,
+        stopReason: aiStopReason,
+        missingCapability,
+      },
+      comparisonAnnotation: {
+        humanVsAiGap,
+        capabilityTags,
+        suggestedAdapterTarget,
+      },
+    }),
+    [
+      aiFailedAbstractions,
+      aiStopReason,
+      annotationStatus,
+      bundle,
+      capabilityTags,
+      confirmedRules,
+      evidenceEvents,
+      humanVsAiGap,
+      missingCapability,
+      recognitionActionIndex,
+      recognitionNotes,
+      ruleHypotheses,
+      strategyChange,
+      suggestedAdapterTarget,
+      teachingNotes,
+      wrongHypotheses,
+    ]
+  )
 
   const run = React.useCallback(
     async (label, action) => {
@@ -1410,10 +1891,33 @@ export default function IdenaArcPage() {
           recordingSummary && recordingSummary.filename
             ? recordingSummary.filename
             : null,
+        agentLogLines:
+          recordingSummary && recordingSummary.agentLogLines
+            ? recordingSummary.agentLogLines
+            : 0,
+        agentLogHash:
+          recordingSummary && recordingSummary.agentLogHash
+            ? recordingSummary.agentLogHash
+            : null,
+        agentLogFilename:
+          recordingSummary && recordingSummary.agentLogFilename
+            ? recordingSummary.agentLogFilename
+            : null,
         lastArcAction:
           recordingSummary && recordingSummary.lastArcAction
             ? recordingSummary.lastArcAction
             : null,
+        annotationHash:
+          annotationBundle && annotationBundle.annotationHash
+            ? annotationBundle.annotationHash
+            : null,
+        annotationAcceptedForTraining: Boolean(
+          annotationBundle && annotationBundle.acceptedForTraining
+        ),
+        trainingExampleCount:
+          trainingDataset && trainingDataset.exampleCount
+            ? trainingDataset.exampleCount
+            : 0,
       })
     window.advanceTime = async (ms) => {
       setElapsedMs((current) =>
@@ -1428,6 +1932,7 @@ export default function IdenaArcPage() {
     }
   }, [
     actionLog,
+    annotationBundle,
     bundle,
     elapsedMs,
     game,
@@ -1436,6 +1941,7 @@ export default function IdenaArcPage() {
     playing,
     recordingSummary,
     session,
+    trainingDataset,
   ])
 
   const resetPlayFromGame = React.useCallback((nextGame) => {
@@ -1460,7 +1966,7 @@ export default function IdenaArcPage() {
   }, [elapsedMs, game])
 
   const handleLocalAction = React.useCallback(
-    (action) => {
+    (action, actionData = {}) => {
       if (!game || !playState) return
       if (playState.completed || elapsedMs >= playDurationMs) {
         setPlaying(false)
@@ -1472,6 +1978,9 @@ export default function IdenaArcPage() {
       const nextAction = {
         t_ms: Math.trunc(tMs),
         action,
+        ...(typeof actionData.x === 'number' && typeof actionData.y === 'number'
+          ? {x: actionData.x, y: actionData.y}
+          : {}),
       }
 
       if (!startedAt) {
@@ -1479,7 +1988,11 @@ export default function IdenaArcPage() {
       }
 
       setPlaying(true)
-      setPlayState((current) => applyLocalAction(current, action))
+      setPlayState((current) =>
+        game.renderHints && game.renderHints.renderer === 'arc-agi-frame-v0'
+          ? current
+          : applyLocalAction(current, action)
+      )
       setActionLog((current) => {
         const nextLog = current.concat(nextAction)
         setActions(buildActionsText(nextLog))
@@ -1610,7 +2123,47 @@ export default function IdenaArcPage() {
     if (!result || result.ok === false) return
     setSession(result.session)
     setBundle(result.bundle)
+    if (
+      result.bundle &&
+      result.bundle.replay &&
+      result.bundle.replay.finalState
+    ) {
+      setPlayState(result.bundle.replay.finalState)
+    }
+    setAnnotationBundle(null)
+    setTrainingDataset(null)
   }, [actionLog, actions, basePayload, run])
+
+  const handleSaveAnnotation = React.useCallback(
+    async (nextStatus) => {
+      setAnnotationStatus(nextStatus)
+      const result = await run(
+        nextStatus === 'final'
+          ? 'Finalize annotation'
+          : 'Save annotation draft',
+        () =>
+          getIdenaArcBridge().saveAnnotationBundle({
+            ...annotationPayload,
+            status: nextStatus,
+          })
+      )
+
+      if (!result || result.ok === false) return
+      setAnnotationBundle(result)
+    },
+    [annotationPayload, run]
+  )
+
+  const handleExportTrainingDataset = React.useCallback(async () => {
+    const result = await run('Export training dataset', () =>
+      getIdenaArcBridge().exportTrainingDataset({
+        annotationBundle,
+      })
+    )
+
+    if (!result || result.ok === false) return
+    setTrainingDataset(result)
+  }, [annotationBundle, run])
 
   const pageContent = (
     <Page>
@@ -1768,6 +2321,34 @@ export default function IdenaArcPage() {
               onChange={(e) => setSessionId(e.target.value)}
             />
           </Field>
+          <Grid templateColumns={['1fr', '1fr 1fr']} gap={4}>
+            <Field label="Game source">
+              <Select
+                value={gameSource}
+                onChange={(e) => setGameSource(e.target.value)}
+              >
+                <option value="local-grid">IdenaArc local grid</option>
+                <option value="arc-agi-public">ARC-AGI public game</option>
+              </Select>
+              <FormHelperText>
+                ARC-AGI public games run through the optional official toolkit;
+                downloaded game sources are not vendored by default.
+              </FormHelperText>
+            </Field>
+            <Field label="ARC-AGI game">
+              <Select
+                value={arcAgiGameId}
+                isDisabled={gameSource !== 'arc-agi-public'}
+                onChange={(e) => setArcAgiGameId(e.target.value)}
+              >
+                {ARC_PUBLIC_GAMES.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </Grid>
           <HStack spacing={3} flexWrap="wrap">
             <PrimaryButton
               isLoading={busy === 'Create session'}
@@ -1918,6 +2499,12 @@ export default function IdenaArcPage() {
                   {recordingSummary.filename}
                 </Text>
               ) : null}
+              {recordingSummary.agentLogFilename ? (
+                <Text fontSize="xs" color="brandGray.500">
+                  {recordingSummary.agentLogLines} log.txt lines ·{' '}
+                  {recordingSummary.agentLogFilename}
+                </Text>
+              ) : null}
               {recordingSummary.lastArcAction ? (
                 <Text fontSize="xs" color="brandGray.500">
                   Last ARC action {recordingSummary.lastArcAction}
@@ -1926,6 +2513,190 @@ export default function IdenaArcPage() {
             </Stack>
           ) : null}
           <JsonBlock value={bundle} />
+        </Stack>
+      </SimpleGrid>
+
+      <SimpleGrid columns={[1, 1, 2]} spacing={6} w="full" mt={6}>
+        <Stack spacing={5} bg="white" borderRadius="md" borderWidth="1px" p={5}>
+          <Flex justify="space-between" gap={3} flexWrap="wrap">
+            <Box>
+              <Heading as="h2" fontSize="md" fontWeight={600}>
+                Hidden-rule annotation
+              </Heading>
+              <Text color="muted" fontSize="sm" mt={1}>
+                Local/private by default. Save after replay verification; upload
+                is never automatic.
+              </Text>
+            </Box>
+            <Badge
+              colorScheme={annotationStatus === 'final' ? 'green' : 'gray'}
+            >
+              {annotationStatus}
+            </Badge>
+          </Flex>
+          <Grid templateColumns={['1fr', '1fr 1fr']} gap={4}>
+            <Field label="Confirmed hidden rules">
+              <Textarea
+                minH="110px"
+                value={confirmedRules}
+                onChange={(e) => setConfirmedRules(e.target.value)}
+                placeholder="One discovered rule per line"
+              />
+            </Field>
+            <Field label="Rule hypotheses">
+              <Textarea
+                minH="110px"
+                value={ruleHypotheses}
+                onChange={(e) => setRuleHypotheses(e.target.value)}
+                placeholder="Hypotheses tested while exploring"
+              />
+            </Field>
+            <Field label="Recognition action index">
+              <Input
+                value={recognitionActionIndex}
+                onChange={(e) => setRecognitionActionIndex(e.target.value)}
+                placeholder="e.g. 4"
+              />
+            </Field>
+            <Field label="Recognition notes">
+              <Input
+                value={recognitionNotes}
+                onChange={(e) => setRecognitionNotes(e.target.value)}
+                placeholder="What made the rule click?"
+              />
+            </Field>
+          </Grid>
+          <Field label="Evidence events">
+            <Textarea
+              minH="90px"
+              value={evidenceEvents}
+              onChange={(e) => setEvidenceEvents(e.target.value)}
+              placeholder="Observation/action moments that supported the rule"
+            />
+          </Field>
+          <Grid templateColumns={['1fr', '1fr 1fr']} gap={4}>
+            <Field label="Wrong hypotheses">
+              <Textarea
+                minH="90px"
+                value={wrongHypotheses}
+                onChange={(e) => setWrongHypotheses(e.target.value)}
+              />
+            </Field>
+            <Field label="Strategy change">
+              <Textarea
+                minH="90px"
+                value={strategyChange}
+                onChange={(e) => setStrategyChange(e.target.value)}
+              />
+            </Field>
+          </Grid>
+          <Field label="Teaching notes">
+            <Textarea
+              minH="90px"
+              value={teachingNotes}
+              onChange={(e) => setTeachingNotes(e.target.value)}
+              placeholder="Compressed explanation useful for adapter training"
+            />
+          </Field>
+        </Stack>
+
+        <Stack spacing={5} bg="white" borderRadius="md" borderWidth="1px" p={5}>
+          <Heading as="h2" fontSize="md" fontWeight={600}>
+            AI comparison + dataset stub
+          </Heading>
+          <Field label="AI failed abstractions">
+            <Textarea
+              minH="90px"
+              value={aiFailedAbstractions}
+              onChange={(e) => setAiFailedAbstractions(e.target.value)}
+              placeholder="Where the local AI looped, overfit, or gave up"
+            />
+          </Field>
+          <Grid templateColumns={['1fr', '1fr 1fr']} gap={4}>
+            <Field label="AI stop reason">
+              <Textarea
+                minH="80px"
+                value={aiStopReason}
+                onChange={(e) => setAiStopReason(e.target.value)}
+              />
+            </Field>
+            <Field label="Missing capability">
+              <Textarea
+                minH="80px"
+                value={missingCapability}
+                onChange={(e) => setMissingCapability(e.target.value)}
+              />
+            </Field>
+          </Grid>
+          <Field label="Human vs AI gap">
+            <Textarea
+              minH="80px"
+              value={humanVsAiGap}
+              onChange={(e) => setHumanVsAiGap(e.target.value)}
+            />
+          </Field>
+          <Grid templateColumns={['1fr', '1fr 1fr']} gap={4}>
+            <Field label="Capability tags">
+              <Input
+                value={capabilityTags}
+                onChange={(e) => setCapabilityTags(e.target.value)}
+              />
+            </Field>
+            <Field label="Adapter target">
+              <Input
+                value={suggestedAdapterTarget}
+                onChange={(e) => setSuggestedAdapterTarget(e.target.value)}
+                placeholder="e.g. delayed-effect tracker"
+              />
+            </Field>
+          </Grid>
+          <HStack spacing={3} flexWrap="wrap">
+            <SecondaryButton
+              isLoading={busy === 'Save annotation draft'}
+              isDisabled={!bundle}
+              onClick={() => handleSaveAnnotation('draft')}
+            >
+              Save draft
+            </SecondaryButton>
+            <PrimaryButton
+              isLoading={busy === 'Finalize annotation'}
+              isDisabled={!bundle}
+              onClick={() => handleSaveAnnotation('final')}
+            >
+              Finalize locally
+            </PrimaryButton>
+            <SecondaryButton
+              isLoading={busy === 'Export training dataset'}
+              isDisabled={
+                !annotationBundle || !annotationBundle.trainingExample
+              }
+              onClick={handleExportTrainingDataset}
+            >
+              Export dataset stub
+            </SecondaryButton>
+          </HStack>
+          {actionTimeline.length ? (
+            <Box>
+              <Text fontWeight={600} mb={2}>
+                Replay timeline
+              </Text>
+              <Stack spacing={1} maxH="160px" overflowY="auto">
+                {actionTimeline.map((item) => (
+                  <HStack key={`${item.index}:${item.action}`} fontSize="xs">
+                    <Badge>{item.index}</Badge>
+                    <Text minW="88px">{item.action}</Text>
+                    <Text color="muted">{item.arcAction || ''}</Text>
+                    <Text color="muted">
+                      {typeof item.score === 'number'
+                        ? `score ${item.score}`
+                        : ''}
+                    </Text>
+                  </HStack>
+                ))}
+              </Stack>
+            </Box>
+          ) : null}
+          <JsonBlock value={trainingDataset || annotationBundle} />
         </Stack>
       </SimpleGrid>
 

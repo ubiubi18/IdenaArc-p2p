@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena-arc.local/protocol/idena-arc-training-example.schema.json",
+  "title": "IdenaArc Training Example",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "protocol",
+    "source",
+    "access",
+    "sessionId",
+    "resultId",
+    "annotationHash",
+    "traceHash",
+    "recordingHash",
+    "agentLogHash",
+    "finalSeedHash",
+    "capabilityTags",
+    "metrics",
+    "target"
+  ],
+  "properties": {
+    "protocol": {"const": "idena-arc-training-example-v0"},
+    "source": {"type": "string"},
+    "access": {"const": "local-only-private-by-default"},
+    "releasePolicy": {"const": "private-by-default"},
+    "sessionId": {"type": "string", "minLength": 1},
+    "resultId": {"type": "string", "minLength": 1},
+    "participantId": {"type": "string"},
+    "annotationHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "traceHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "recordingHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "agentLogHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "finalSeedHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "generatorHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "capabilityTags": {"type": "array", "items": {"type": "string"}},
+    "metrics": {
+      "type": "object",
+      "required": ["score", "actionCount", "replayVerified"],
+      "properties": {
+        "score": {"type": ["integer", "null"], "minimum": 0},
+        "actionCount": {"type": "integer", "minimum": 0},
+        "replayVerified": {"type": "boolean"}
+      }
+    },
+    "target": {"type": "object"}
+  },
+  "$defs": {
+    "sha256Prefixed": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}
