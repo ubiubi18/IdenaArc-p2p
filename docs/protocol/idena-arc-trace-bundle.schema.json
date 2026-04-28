@@ -12,6 +12,12 @@
     "replayVerified": {"type": "boolean"},
     "signatureValid": {"type": "boolean"},
     "anchorValid": {"type": "boolean"},
+    "recordingHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "recordingJsonlHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "recordingFilename": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._:-]+\\.recording\\.jsonl$"
+    },
     "result": {
       "type": "object",
       "additionalProperties": true,
@@ -67,6 +73,25 @@
         "finalStateHash": {"$ref": "#/$defs/sha256Prefixed"},
         "score": {"type": "integer", "minimum": 0}
       }
+    },
+    "recording": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["protocol", "format", "source", "entries", "jsonl"],
+      "properties": {
+        "protocol": {"const": "idena-arc-recording-v0"},
+        "format": {"const": "arc-style-jsonl-v0"},
+        "source": {"type": "string", "minLength": 1},
+        "gameId": {"type": "string", "minLength": 1},
+        "generatorHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "generatorVersion": {"type": "string"},
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/recordingEntry"}
+        },
+        "jsonl": {"type": "string", "minLength": 1}
+      }
     }
   },
   "$defs": {
@@ -77,6 +102,40 @@
     "keccak256Prefixed": {
       "type": "string",
       "pattern": "^keccak256:[a-f0-9]{64}$"
+    },
+    "recordingEntry": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["timestamp", "data"],
+      "properties": {
+        "timestamp": {"type": "string", "format": "date-time"},
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "game_id",
+            "frame",
+            "state",
+            "score",
+            "action_input",
+            "guid",
+            "full_reset"
+          ],
+          "properties": {
+            "game_id": {"type": "string", "minLength": 1},
+            "frame": {"type": "array"},
+            "state": {"type": ["object", "string", "null"]},
+            "score": {"type": ["integer", "number", "null"]},
+            "action_input": {
+              "type": ["object", "null"],
+              "additionalProperties": true
+            },
+            "guid": {"type": "string", "minLength": 1},
+            "full_reset": {"type": "boolean"},
+            "state_hash": {"type": ["string", "null"]}
+          }
+        }
+      }
     },
     "identitySignature": {
       "oneOf": [

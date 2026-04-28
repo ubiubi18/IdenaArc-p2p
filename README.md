@@ -36,6 +36,19 @@ The first build slice is inside the Electron app at `/idena-arc`.
 - deterministic `final_seed` derivation using canonical JSON and SHA-256
 - Python sidecar at `python/idena_arc/arc_sidecar.py`
 - ARCEngine-shaped sidecar boundary with a deterministic local-grid fallback
+- playable Electron game board with keyboard, click, undo, reset, timer, and
+  automatic trace recording
+- ARC-style action metadata is stored with each replayed action (`ACTION1` to
+  `ACTION7`) while the UI keeps readable local action names such as
+  `move_right`
+- ARC-style recording bundle output: each submitted trace carries a
+  timestamped JSONL replay stream (`recording.entries` plus `recording.jsonl`)
+  so gameplay can be inspected separately from signature and score verification
+- standalone `.recording.jsonl` files are written next to local trace bundles
+  using the ARC-style `{game_id}.{participant}.{max_actions}.{guid}` filename
+  shape
+- browser-demo mode on the raw Next dev URL so the board can be tested without
+  Electron IPC; demo traces are replayed but intentionally unsigned
 - no private-key entry in the renderer
 - rehearsal devnet signatures through trusted main-process identity material
 - external address proof through local-node `dna_sign` on loopback RPC, or a
@@ -43,9 +56,15 @@ The first build slice is inside the Electron app at `/idena-arc`.
 - trace bundles stored under the Electron user data path in `idena-arc/`
 - optional explicit IPFS upload through Idena RPC `ipfs_add`
 
-The real ARCEngine module is the next generator target. The bundled fallback
-keeps replay and verification testable even before Python 3.12 and `arcengine`
-are installed.
+The real ARCEngine / ARC-AGI environment module is the next generator target.
+The bundled fallback keeps replay and verification testable even before Python
+3.12, `arcengine`, and the optional `arc-agi` toolkit are installed.
+
+ARC Prize's docs distinguish local engine play from online/swarm replays:
+local toolkit play is useful for development, while official shareable replays
+come from API or swarm runs. IdenaArc therefore stores its own ARC-style JSONL
+recording in every local trace bundle instead of depending on official online
+scorecards.
 
 ## Runtime
 
@@ -70,6 +89,12 @@ Optional ARCEngine work requires Python 3.12:
 python3.12 -m venv .venv-idena-arc
 . .venv-idena-arc/bin/activate
 pip install -e python/idena_arc
+```
+
+To experiment with the open-source ARC-AGI Toolkit boundary:
+
+```bash
+pip install -e "python/idena_arc[arc-agi]"
 ```
 
 The fallback sidecar and its tests run with the system Python 3.9.
@@ -119,3 +144,7 @@ npm run build:renderer
 - [Idena IPFS upload](https://docs.idena.io/docs/developer/ipfs/upload)
 - [ARCEngine](https://github.com/arcprize/ARCEngine)
 - [arcengine on PyPI](https://pypi.org/project/arcengine/)
+- [ARC-AGI Toolkit](https://github.com/arcprize/ARC-AGI)
+- [ARC-AGI Toolkit docs](https://docs.arcprize.org/toolkit/overview)
+- [ARC recordings and replays](https://docs.arcprize.org/recordings)
+- [ARC action interface](https://docs.arcprize.org/actions)

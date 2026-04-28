@@ -24,11 +24,26 @@ const {
 const PROTOCOL = 'idena-arc-session-v0'
 const TRACE_PROTOCOL = 'idena-arc-trace-v0'
 const RESULT_PROTOCOL = 'idena-arc-result-v0'
+const RECORDING_PROTOCOL = 'idena-arc-recording-v0'
 const DEFAULT_PLAY_DURATION_MS = 3 * 60 * 1000
 const DEFAULT_GRACE_PERIOD_MS = 30 * 1000
 const DEFAULT_GENERATOR_VERSION = '0.1.0'
 const MAX_ACTIONS = 512
 const IDENA_ARC_PROOF_CONTRACT_PLACEHOLDER = '<idena-arc-proof-contract>'
+const ARC_ACTION_ALIASES = {
+  move_up: 'ACTION1',
+  up: 'ACTION1',
+  move_down: 'ACTION2',
+  down: 'ACTION2',
+  move_left: 'ACTION3',
+  left: 'ACTION3',
+  move_right: 'ACTION4',
+  right: 'ACTION4',
+  interact: 'ACTION5',
+  select: 'ACTION5',
+  click: 'ACTION6',
+  undo: 'ACTION7',
+}
 
 function isoNow() {
   return new Date().toISOString()
@@ -187,6 +202,155 @@ function normalizeActions(actions) {
     .filter(Boolean)
 }
 
+function arcActionName(action) {
+  return (
+    ARC_ACTION_ALIASES[
+      String(action || '')
+        .trim()
+        .toLowerCase()
+    ] || null
+  )
+}
+
+function timestampFromOffset(baseIso, offsetMs) {
+  const baseMs = Date.parse(baseIso || '')
+  const startMs = Number.isFinite(baseMs) ? baseMs : 0
+
+  return new Date(startMs + Math.max(0, Number(offsetMs) || 0)).toISOString()
+}
+
+function gridFrameFromState(state = {}) {
+  const gridSize = Math.max(0, Math.trunc(Number(state.gridSize || 0)))
+
+  if (!gridSize) {
+    return []
+  }
+
+  const frame = Array.from({length: gridSize}, () =>
+    Array.from({length: gridSize}, () => '.')
+  )
+  const place = (cell, value) => {
+    const x = Math.trunc(Number(cell && cell.x))
+    const y = Math.trunc(Number(cell && cell.y))
+
+    if (x >= 0 && x < gridSize && y >= 0 && y < gridSize) {
+      frame[y][x] = value
+    }
+  }
+
+  ;(Array.isArray(state.obstacles) ? state.obstacles : []).forEach((cell) =>
+    place(cell, '#')
+  )
+  place(state.goal, 'G')
+  place(state.player, 'P')
+
+  return frame
+}
+
+function fallbackTimelineFromTrace(session, trace, replay) {
+  const actions = Array.isArray(trace.actions) ? trace.actions : []
+  const timeline = [
+    {
+      phase: 'initial',
+      step: 0,
+      t_ms: 0,
+      actionInput: null,
+      state: session.game && session.game.initialState,
+      stateHash: trace.initialStateHash,
+      score: 0,
+      fullReset: true,
+    },
+  ]
+
+  actions.forEach((action, index) => {
+    timeline.push({
+      phase: 'action',
+      step: index + 1,
+      t_ms: action.t_ms,
+      actionInput: {
+        id: index,
+        data: {
+          action: action.action,
+          t_ms: action.t_ms,
+        },
+      },
+      state: null,
+      stateHash: action.observation_hash,
+      score: null,
+      fullReset: false,
+    })
+  })
+
+  if (!actions.length && replay && replay.finalState) {
+    timeline[0] = {
+      ...timeline[0],
+      state: replay.finalState,
+      stateHash: replay.finalStateHash,
+      score: replay.score,
+    }
+  }
+
+  return timeline
+}
+
+function buildReplayRecording({session, trace, replay}) {
+  const gameId = session.sessionId
+  const startedAt =
+    session.manifest.startTime || session.createdAt || '1970-01-01T00:00:00Z'
+  const timeline =
+    Array.isArray(replay && replay.timeline) && replay.timeline.length
+      ? replay.timeline
+      : fallbackTimelineFromTrace(session, trace, replay)
+  const entries = timeline.map((point, index) => {
+    const actionInput =
+      point && point.actionInput
+        ? {
+            id: point.actionInput.id,
+            data: {
+              game_id: gameId,
+              ...(point.actionInput.data || {}),
+              arc_action: arcActionName(point.actionInput.data.action),
+            },
+            reasoning: point.actionInput.reasoning || null,
+          }
+        : null
+    const state = point && point.state ? point.state : null
+
+    return {
+      timestamp: timestampFromOffset(startedAt, point && point.t_ms),
+      data: {
+        game_id: gameId,
+        frame: gridFrameFromState(state || {}),
+        state: state || null,
+        score: typeof point.score === 'number' ? point.score : null,
+        action_input: actionInput,
+        guid: `${gameId}:${trace.participantId || 'player'}:${index}`,
+        full_reset: Boolean(point.fullReset || index === 0),
+        state_hash: point.stateHash || null,
+      },
+    }
+  })
+  const jsonl = entries.map((entry) => canonicalJson(entry)).join('\n')
+
+  return {
+    protocol: RECORDING_PROTOCOL,
+    format: 'arc-style-jsonl-v0',
+    source: 'idena-arc-sidecar-replay',
+    gameId,
+    generatorHash: session.manifest.generator.hash,
+    generatorVersion: session.manifest.generator.version,
+    entries,
+    jsonl: jsonl ? `${jsonl}\n` : '',
+  }
+}
+
+function buildRecordingFilename({session, trace, resultId}) {
+  return `${safeId(session.sessionId, 'game')}.${safeId(
+    trace.participantId,
+    'player'
+  )}.${MAX_ACTIONS}.${safeId(resultId, 'result')}.recording.jsonl`
+}
+
 function parseJsonOutput(stdout, stderr) {
   try {
     return JSON.parse(stdout || '{}')
@@ -237,6 +401,10 @@ function createIdenaArcManager({
       safeId(sessionId, 'session'),
       `${safeId(resultId, 'result')}.json`
     )
+  }
+
+  function recordingJsonlPath(sessionId, filename) {
+    return path.join(traceDir(), safeId(sessionId, 'session'), filename)
   }
 
   async function readJson(filePath, fallback = null) {
@@ -1043,6 +1211,10 @@ function createIdenaArcManager({
       identityProof.identityProof
     )
     const replayVerified = true
+    const recording = buildReplayRecording({session, trace, replay})
+    const recordingHash = hashJsonPrefixed(recording)
+    const recordingJsonlHash = sha256Prefixed(recording.jsonl)
+    const recordingFilename = buildRecordingFilename({session, trace, resultId})
     const verified = replayVerified && (signatureValid || anchorValid)
     const bundle = {
       protocol: 'idena-arc-trace-bundle-v0',
@@ -1051,12 +1223,21 @@ function createIdenaArcManager({
       replayVerified,
       signatureValid,
       anchorValid,
+      recordingHash,
+      recordingJsonlHash,
+      recordingFilename,
       result,
       trace,
       replay,
+      recording,
     }
 
     await writeJson(traceBundlePath(session.sessionId, resultId), bundle)
+    await fs.outputFile(
+      recordingJsonlPath(session.sessionId, recordingFilename),
+      recording.jsonl,
+      'utf8'
+    )
 
     session.results = (Array.isArray(session.results) ? session.results : [])
       .filter((item) => item.resultId !== resultId)
@@ -1066,6 +1247,9 @@ function createIdenaArcManager({
         playerAddress: result.playerAddress,
         score: result.score,
         traceHash,
+        recordingHash,
+        recordingJsonlHash,
+        recordingFilename,
         verified,
         storedAt: isoNow(),
       })
@@ -1098,6 +1282,28 @@ function createIdenaArcManager({
       hashJsonPrefixed(expectedTrace) === bundle.result.traceHash &&
       replay.finalStateHash === bundle.trace.finalStateHash &&
       replay.score === bundle.result.score
+    const expectedRecording = buildReplayRecording({
+      session,
+      trace: expectedTrace,
+      replay,
+    })
+    const expectedRecordingHash = hashJsonPrefixed(expectedRecording)
+    const expectedRecordingJsonlHash = sha256Prefixed(expectedRecording.jsonl)
+    const suppliedRecordingObjectHash = bundle.recording
+      ? hashJsonPrefixed(bundle.recording)
+      : null
+    const suppliedRecordingJsonlHash =
+      bundle.recording && typeof bundle.recording.jsonl === 'string'
+        ? sha256Prefixed(bundle.recording.jsonl)
+        : null
+    const recordingMatches =
+      Boolean(bundle.recording) &&
+      suppliedRecordingObjectHash === expectedRecordingHash &&
+      suppliedRecordingJsonlHash === expectedRecordingJsonlHash &&
+      (!bundle.recordingHash ||
+        bundle.recordingHash === expectedRecordingHash) &&
+      (!bundle.recordingJsonlHash ||
+        bundle.recordingJsonlHash === expectedRecordingJsonlHash)
     const resultPayload = {...bundle.result}
     const {signature, identityProof} = resultPayload
     delete resultPayload.signature
@@ -1113,8 +1319,11 @@ function createIdenaArcManager({
     )
 
     return {
-      ok: traceMatches && (signatureValid || anchorValid),
+      ok: traceMatches && recordingMatches && (signatureValid || anchorValid),
       traceMatches,
+      recordingMatches,
+      recordingHash: expectedRecordingHash,
+      recordingJsonlHash: expectedRecordingJsonlHash,
       signatureValid,
       anchorValid,
       replay,

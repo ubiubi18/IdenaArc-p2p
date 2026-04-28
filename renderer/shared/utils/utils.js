@@ -38,6 +38,9 @@ function getRpcBridge() {
 export function createRpcCaller({url, key} = {}) {
   return async function (method, ...params) {
     const rpcBridge = getRpcBridge()
+    if (!rpcBridge && !url) {
+      throw new Error('RPC URL is required')
+    }
     const response = rpcBridge
       ? await rpcBridge.call({
           method,

@@ -21,6 +21,13 @@ try:  # pragma: no cover - optional until the concrete ARCEngine module lands.
 except Exception:  # pragma: no cover - the fallback is the tested MVP path.
     ARCENGINE_AVAILABLE = False
 
+try:  # pragma: no cover - optional ARC-AGI Toolkit integration boundary.
+    import arc_agi  # type: ignore  # noqa: F401
+
+    ARC_AGI_AVAILABLE = True
+except Exception:  # pragma: no cover - the local deterministic fallback is used.
+    ARC_AGI_AVAILABLE = False
+
 
 GRID_SIZE = 5
 ACTION_DELTAS = {
@@ -32,6 +39,76 @@ ACTION_DELTAS = {
     "left": (-1, 0),
     "move_right": (1, 0),
     "right": (1, 0),
+}
+ARC_ACTION_ALIASES = {
+    "move_up": "ACTION1",
+    "up": "ACTION1",
+    "move_down": "ACTION2",
+    "down": "ACTION2",
+    "move_left": "ACTION3",
+    "left": "ACTION3",
+    "move_right": "ACTION4",
+    "right": "ACTION4",
+    "interact": "ACTION5",
+    "select": "ACTION5",
+    "click": "ACTION6",
+    "undo": "ACTION7",
+}
+ACTION_SPACE = [
+    {
+        "name": "move_up",
+        "arcAction": "ACTION1",
+        "label": "Move up",
+        "keys": ["ArrowUp", "W"],
+        "dx": 0,
+        "dy": -1,
+    },
+    {
+        "name": "move_right",
+        "arcAction": "ACTION4",
+        "label": "Move right",
+        "keys": ["ArrowRight", "D"],
+        "dx": 1,
+        "dy": 0,
+    },
+    {
+        "name": "move_down",
+        "arcAction": "ACTION2",
+        "label": "Move down",
+        "keys": ["ArrowDown", "S"],
+        "dx": 0,
+        "dy": 1,
+    },
+    {
+        "name": "move_left",
+        "arcAction": "ACTION3",
+        "label": "Move left",
+        "keys": ["ArrowLeft", "A"],
+        "dx": -1,
+        "dy": 0,
+    },
+]
+CELL_TYPES = {
+    "empty": {
+        "label": "Open cell",
+        "color": "#f8fafc",
+        "borderColor": "#d6dbe3",
+    },
+    "player": {
+        "label": "Player",
+        "color": "#578fff",
+        "borderColor": "#447ceb",
+    },
+    "goal": {
+        "label": "Goal",
+        "color": "#27d980",
+        "borderColor": "#14a864",
+    },
+    "obstacle": {
+        "label": "Blocked cell",
+        "color": "#53565c",
+        "borderColor": "#16161d",
+    },
 }
 
 
@@ -91,6 +168,38 @@ def build_initial_state(seed: str) -> Dict[str, Any]:
     }
 
 
+def build_render_hints(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "renderer": "idena-arc-grid-v0",
+        "board": {
+            "type": "square-grid",
+            "width": int(state.get("gridSize") or GRID_SIZE),
+            "height": int(state.get("gridSize") or GRID_SIZE),
+            "origin": "top-left",
+        },
+        "input": {
+            "modes": ["keyboard", "direction-buttons", "adjacent-cell-click"],
+            "keyboard": {
+                "ArrowUp": "move_up",
+                "w": "move_up",
+                "ArrowRight": "move_right",
+                "d": "move_right",
+                "ArrowDown": "move_down",
+                "s": "move_down",
+                "ArrowLeft": "move_left",
+                "a": "move_left",
+            },
+        },
+        "cellTypes": CELL_TYPES,
+        "actionSpace": ACTION_SPACE,
+        "objective": {
+            "type": "reach-goal",
+            "visible": True,
+            "summary": "Reach the target cell while avoiding blocked cells.",
+        },
+    }
+
+
 def clamp(value: int) -> int:
     return max(0, min(GRID_SIZE - 1, value))
 
@@ -143,16 +252,52 @@ def normalize_actions(actions: Any) -> List[Dict[str, Any]]:
     return result
 
 
+def arc_action_name(action_name: str) -> str | None:
+    return ARC_ACTION_ALIASES.get(str(action_name or "").strip().lower())
+
+
 def replay(seed: str, actions: Any, initial_state: Dict[str, Any] | None = None) -> Dict[str, Any]:
     state = initial_state or build_initial_state(seed)
     replayed_actions: List[Dict[str, Any]] = []
+    timeline: List[Dict[str, Any]] = [
+        {
+            "phase": "initial",
+            "step": 0,
+            "t_ms": 0,
+            "actionInput": None,
+            "state": json.loads(canonical_json(state)),
+            "stateHash": hash_state(state),
+            "score": score_state(state, 0),
+            "fullReset": True,
+        }
+    ]
 
     for item in normalize_actions(actions):
         state = apply_action(state, item["action"])
+        observation_hash = hash_state(state)
         replayed_actions.append(
             {
                 **item,
-                "observation_hash": hash_state(state),
+                "observation_hash": observation_hash,
+            }
+        )
+        timeline.append(
+            {
+                "phase": "action",
+                "step": len(replayed_actions),
+                "t_ms": item["t_ms"],
+                "actionInput": {
+                    "id": len(replayed_actions) - 1,
+                    "data": {
+                        "action": item["action"],
+                        "arc_action": arc_action_name(item["action"]),
+                        "t_ms": item["t_ms"],
+                    },
+                },
+                "state": json.loads(canonical_json(state)),
+                "stateHash": observation_hash,
+                "score": score_state(state, len(replayed_actions)),
+                "fullReset": False,
             }
         )
         if state.get("completed"):
@@ -162,7 +307,11 @@ def replay(seed: str, actions: Any, initial_state: Dict[str, Any] | None = None)
         "protocol": "idena-arc-sidecar-v0",
         "engine": state.get("engine"),
         "arcengineAvailable": ARCENGINE_AVAILABLE,
+        "arcAgiAvailable": ARC_AGI_AVAILABLE,
+        "renderHints": build_render_hints(state),
+        "actionSpace": ACTION_SPACE,
         "actions": replayed_actions,
+        "timeline": timeline,
         "finalState": state,
         "finalStateHash": hash_state(state),
         "score": score_state(state, len(replayed_actions)),
@@ -176,8 +325,13 @@ def generate(seed: str, generator: Dict[str, Any] | None = None) -> Dict[str, An
         "protocol": "idena-arc-sidecar-v0",
         "engine": state["engine"],
         "arcengineAvailable": ARCENGINE_AVAILABLE,
+        "arcAgiAvailable": ARC_AGI_AVAILABLE,
         "generator": generator or {},
         "seed": seed,
+        "title": "IdenaArc Local Grid",
+        "level": 0,
+        "actionSpace": ACTION_SPACE,
+        "renderHints": build_render_hints(state),
         "initialState": state,
         "initialStateHash": hash_state(state),
         "goalStateHash": hash_state({"goal": state["goal"], "gridSize": GRID_SIZE}),

@@ -68,7 +68,67 @@ describe('idena-arc manager', () => {
     expect(seed.finalSeedHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(generated.game.initialStateHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(submitted.bundle.verified).toBe(true)
+    expect(submitted.bundle.recordingHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(submitted.bundle.recordingJsonlHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(submitted.bundle.recordingFilename).toMatch(/\.recording\.jsonl$/)
+    expect(submitted.bundle.recording).toMatchObject({
+      protocol: 'idena-arc-recording-v0',
+      format: 'arc-style-jsonl-v0',
+      gameId: created.sessionId,
+    })
+    expect(submitted.bundle.recording.entries[0].data.full_reset).toBe(true)
+    expect(
+      submitted.bundle.recording.entries[1].data.action_input.data
+    ).toMatchObject({
+      action: 'move_right',
+      arc_action: 'ACTION4',
+      game_id: created.sessionId,
+    })
+    expect(submitted.bundle.recording.jsonl.trim().split('\n')).toHaveLength(
+      submitted.bundle.recording.entries.length
+    )
+    await expect(
+      fs.readFile(
+        path.join(
+          baseDir,
+          'traces',
+          created.sessionId,
+          submitted.bundle.recordingFilename
+        ),
+        'utf8'
+      )
+    ).resolves.toBe(submitted.bundle.recording.jsonl)
     expect(verified.ok).toBe(true)
+    expect(verified.recordingMatches).toBe(true)
+
+    const badHash = {
+      ...submitted.bundle,
+      recordingHash: `sha256:${'0'.repeat(64)}`,
+    }
+    const rejected = await manager.verifyTraceBundle({bundle: badHash})
+
+    const staleRecording = {
+      ...submitted.bundle,
+      recording: {
+        ...submitted.bundle.recording,
+        entries: submitted.bundle.recording.entries.map((entry, index) =>
+          index === 1
+            ? {
+                ...entry,
+                data: {...entry.data, score: Number(entry.data.score) + 1},
+              }
+            : entry
+        ),
+      },
+    }
+    const staleRejected = await manager.verifyTraceBundle({
+      bundle: staleRecording,
+    })
+
+    expect(rejected.ok).toBe(false)
+    expect(rejected.recordingMatches).toBe(false)
+    expect(staleRejected.ok).toBe(false)
+    expect(staleRejected.recordingMatches).toBe(false)
   })
 
   it('uses external RPC adapters for identity and IPFS calls', async () => {
