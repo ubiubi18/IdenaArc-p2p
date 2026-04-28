@@ -1,0 +1,23 @@
+name: Lint and tests
+
+on: push
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run release check
+        run: npm run release:check

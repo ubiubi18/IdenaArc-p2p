@@ -1,0 +1,1210 @@
+const path = require('path')
+const {spawn} = require('child_process')
+const fs = require('fs-extra')
+const httpClient = require('../utils/fetch-client')
+const appDataPath = require('../app-data-path')
+const {
+  canonicalJson,
+  sha256Hex,
+  sha256Prefixed,
+  hashJsonPrefixed,
+  randomSaltHex,
+  buildSaltCommitment,
+  assertSaltCommitment,
+  deriveFinalSeed,
+  privateKeyToAddress,
+  normalizeAddress,
+  idenaSignatureHashPrefixed,
+  recoverIdenaSignatureAddress,
+  signPayloadWithPrivateKey,
+  verifyIdenaSignature,
+  verifyPayloadSignature,
+} = require('./crypto')
+
+const PROTOCOL = 'idena-arc-session-v0'
+const TRACE_PROTOCOL = 'idena-arc-trace-v0'
+const RESULT_PROTOCOL = 'idena-arc-result-v0'
+const DEFAULT_PLAY_DURATION_MS = 3 * 60 * 1000
+const DEFAULT_GRACE_PERIOD_MS = 30 * 1000
+const DEFAULT_GENERATOR_VERSION = '0.1.0'
+const MAX_ACTIONS = 512
+const IDENA_ARC_PROOF_CONTRACT_PLACEHOLDER = '<idena-arc-proof-contract>'
+
+function isoNow() {
+  return new Date().toISOString()
+}
+
+function safeId(value, fallback) {
+  return (
+    String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._:-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 96) || fallback
+  )
+}
+
+function trimString(value) {
+  return String(value || '').trim()
+}
+
+function normalizeProofMode(payload = {}, adapter = 'external') {
+  const mode = trimString(payload.proofMode || payload.signingMode)
+
+  if (adapter === 'rehearsal-devnet') {
+    return 'devnet-local-signature'
+  }
+
+  return mode || 'node-signature'
+}
+
+function isLoopbackRpcUrl(value) {
+  try {
+    const parsed = new URL(value)
+    return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsed.hostname)
+  } catch {
+    return false
+  }
+}
+
+function buildResultProofMessage(resultPayload) {
+  return `idena-arc-result-v0:${hashJsonPrefixed(resultPayload)}`
+}
+
+function buildAnchorPayload({resultPayload, trace, proof = {}}) {
+  const resultPayloadHash = hashJsonPrefixed(resultPayload)
+
+  return {
+    protocol: 'idena-arc-proof-anchor-v0',
+    proofType: 'idena-tx-or-contract-anchor',
+    resultPayloadHash,
+    sessionId: resultPayload.sessionId,
+    playerAddress: resultPayload.playerAddress,
+    participantId: trace.participantId,
+    traceHash: resultPayload.traceHash,
+    finalSeedHash: resultPayload.finalSeedHash,
+    generatorHash: resultPayload.generatorHash,
+    proofTxHash: trimString(proof.txHash || proof.proofTxHash) || null,
+    proofCid: trimString(proof.cid || proof.proofCid) || null,
+    proofContract:
+      trimString(proof.contract || proof.proofContract) ||
+      IDENA_ARC_PROOF_CONTRACT_PLACEHOLDER,
+    createdAt: resultPayload.createdAt,
+  }
+}
+
+function rpcErrorMessage(error) {
+  return String(error && error.message ? error.message : error)
+}
+
+function isFailedRpcResult(value) {
+  return Boolean(value && typeof value === 'object' && value.error)
+}
+
+function buildTransactionProofAnchor({resultPayload, trace, proof}) {
+  const anchorPayload = buildAnchorPayload({resultPayload, trace, proof})
+  const payloadHash = hashJsonPrefixed(anchorPayload)
+  const payloadText = `idena-arc:v0:${payloadHash}`
+
+  return {
+    type: 'idena-arc-tx-anchor-v0',
+    status:
+      anchorPayload.proofTxHash || anchorPayload.proofCid
+        ? 'submitted-reference'
+        : 'draft',
+    expectedAddress: resultPayload.playerAddress,
+    payloadHash,
+    resultPayloadHash: anchorPayload.resultPayloadHash,
+    txHash: anchorPayload.proofTxHash,
+    cid: anchorPayload.proofCid,
+    contract: anchorPayload.proofContract,
+    instructions: {
+      payloadText,
+      ipfsObject: anchorPayload,
+      dnaSendTransactionDraft: {
+        from: resultPayload.playerAddress,
+        to: resultPayload.playerAddress,
+        amount: '0',
+        payloadText,
+      },
+      contractCallDraft: {
+        from: resultPayload.playerAddress,
+        contract: anchorPayload.proofContract,
+        method: 'submitProof',
+        args: [
+          {value: payloadHash},
+          {value: anchorPayload.resultPayloadHash},
+          {value: anchorPayload.traceHash},
+        ],
+      },
+    },
+  }
+}
+
+function verifyTransactionProofAnchor(resultPayload, proof) {
+  if (!proof || proof.type !== 'idena-arc-tx-anchor-v0') {
+    return false
+  }
+
+  const expectedResultPayloadHash = hashJsonPrefixed(resultPayload)
+
+  return (
+    proof.resultPayloadHash === expectedResultPayloadHash &&
+    proof.expectedAddress === resultPayload.playerAddress &&
+    Boolean(proof.txHash || proof.cid)
+  )
+}
+
+function normalizeAction(action) {
+  if (typeof action === 'string') {
+    return {
+      t_ms: 0,
+      action: action.trim(),
+    }
+  }
+
+  if (!action || typeof action !== 'object' || Array.isArray(action)) {
+    return null
+  }
+
+  const name = String(action.action || action.type || '').trim()
+
+  if (!name) {
+    return null
+  }
+
+  return {
+    t_ms: Math.max(0, Math.trunc(Number(action.t_ms || action.tMs || 0) || 0)),
+    action: name.slice(0, 80),
+  }
+}
+
+function normalizeActions(actions) {
+  return (Array.isArray(actions) ? actions : [])
+    .slice(0, MAX_ACTIONS)
+    .map(normalizeAction)
+    .filter(Boolean)
+}
+
+function parseJsonOutput(stdout, stderr) {
+  try {
+    return JSON.parse(stdout || '{}')
+  } catch (error) {
+    const details = String(stderr || '').trim()
+    throw new Error(
+      `IdenaArc sidecar returned invalid JSON${
+        details ? `: ${details.slice(0, 400)}` : ''
+      }`
+    )
+  }
+}
+
+function createIdenaArcManager({
+  logger: _logger,
+  validationDevnet,
+  baseDir,
+  pythonCommand,
+  rpcClient = httpClient,
+} = {}) {
+  const rootDir = path.join(__dirname, '..', '..')
+  const sidecarPath = path.join(
+    rootDir,
+    'python',
+    'idena_arc',
+    'arc_sidecar.py'
+  )
+
+  function resolveBaseDir() {
+    return baseDir || path.join(appDataPath('userData'), 'idena-arc')
+  }
+
+  function relayDir() {
+    return path.join(resolveBaseDir(), 'relay')
+  }
+
+  function traceDir() {
+    return path.join(resolveBaseDir(), 'traces')
+  }
+
+  function sessionPath(sessionId) {
+    return path.join(relayDir(), `${safeId(sessionId, 'session')}.json`)
+  }
+
+  function traceBundlePath(sessionId, resultId) {
+    return path.join(
+      traceDir(),
+      safeId(sessionId, 'session'),
+      `${safeId(resultId, 'result')}.json`
+    )
+  }
+
+  async function readJson(filePath, fallback = null) {
+    try {
+      return await fs.readJson(filePath)
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        return fallback
+      }
+      throw error
+    }
+  }
+
+  async function writeJson(filePath, value) {
+    await fs.ensureDir(path.dirname(filePath))
+    await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+    return value
+  }
+
+  async function readSession(sessionId) {
+    const session = await readJson(sessionPath(sessionId), null)
+
+    if (!session) {
+      throw new Error(`IdenaArc session not found: ${sessionId}`)
+    }
+
+    return session
+  }
+
+  async function writeSession(session) {
+    return writeJson(sessionPath(session.sessionId), {
+      ...session,
+      updatedAt: isoNow(),
+    })
+  }
+
+  async function listSessions() {
+    await fs.ensureDir(relayDir())
+    const files = (await fs.readdir(relayDir())).filter((file) =>
+      file.endsWith('.json')
+    )
+    const sessions = await Promise.all(
+      files.map((file) => readJson(path.join(relayDir(), file), null))
+    )
+
+    return sessions
+      .filter(Boolean)
+      .sort((left, right) =>
+        String(right.updatedAt || '').localeCompare(
+          String(left.updatedAt || '')
+        )
+      )
+  }
+
+  async function callNodeRpc(connection, method, params = []) {
+    const connectionKey =
+      (connection && connection.apiKey) || (connection && connection.key) || ''
+    const normalizedConnection = {
+      url: String(connection && connection.url ? connection.url : '').trim(),
+      key: String(connectionKey).trim(),
+    }
+
+    if (!normalizedConnection.url) {
+      throw new Error('Idena RPC URL is required')
+    }
+
+    const client = rpcClient.create({
+      baseURL: normalizedConnection.url,
+      timeout: 5000,
+      validateStatus: (statusCode) => statusCode >= 200 && statusCode < 500,
+      headers: {'Content-Type': 'application/json'},
+    })
+    const {data} = await client.post('/', {
+      jsonrpc: '2.0',
+      method,
+      params,
+      id: Date.now(),
+      key: normalizedConnection.key,
+    })
+
+    if (data && data.error) {
+      throw new Error(data.error.message || `Idena RPC error: ${method}`)
+    }
+
+    return data ? data.result : undefined
+  }
+
+  function getGeneratorDescriptor() {
+    const hash = fs.existsSync(sidecarPath)
+      ? sha256Prefixed(fs.readFileSync(sidecarPath))
+      : null
+
+    return {
+      cid: 'local:python/idena_arc/arc_sidecar.py',
+      hash,
+      version: DEFAULT_GENERATOR_VERSION,
+    }
+  }
+
+  function getDevnetSignerDetails() {
+    if (
+      !validationDevnet ||
+      typeof validationDevnet.getPrimarySignerDetails !== 'function'
+    ) {
+      throw new Error('Validation rehearsal signer is not available')
+    }
+
+    return validationDevnet.getPrimarySignerDetails()
+  }
+
+  function getOptionalDevnetSignerDetails() {
+    try {
+      return getDevnetSignerDetails()
+    } catch {
+      return null
+    }
+  }
+
+  function resolveInternalSigner(payload = {}) {
+    const adapter = String(
+      payload.adapter || payload.identityAdapter || 'external'
+    )
+
+    if (adapter === 'rehearsal-devnet') {
+      const signer = getDevnetSignerDetails()
+      return {
+        adapter,
+        address: signer.address,
+        privateKeyHex: signer.privateKeyHex,
+      }
+    }
+
+    const privateKeyHex = String(
+      payload.signerPrivateKey || payload.privateKey || ''
+    ).trim()
+
+    if (!privateKeyHex) {
+      throw new Error('A local signer private key is required for this adapter')
+    }
+
+    return {
+      adapter: 'external',
+      address: privateKeyToAddress(privateKeyHex),
+      privateKeyHex,
+    }
+  }
+
+  async function createNodeSignature(payload, resultPayload) {
+    const connection = resolveRpcConnection(payload)
+
+    if (!isLoopbackRpcUrl(connection.url)) {
+      throw new Error(
+        'Local node signing requires a loopback Idena RPC URL. Use tx-anchor proof mode for remote RPCs.'
+      )
+    }
+
+    const message = buildResultProofMessage(resultPayload)
+    const signatureValue = await callNodeRpc(connection, 'dna_sign', [
+      message,
+      'prefix',
+    ])
+    const address = recoverIdenaSignatureAddress(
+      message,
+      signatureValue,
+      'prefix'
+    )
+
+    return {
+      type: 'idena-node-dna-sign-v0',
+      address,
+      format: 'prefix',
+      message,
+      messageHash: idenaSignatureHashPrefixed(message, 'prefix'),
+      value: signatureValue,
+    }
+  }
+
+  async function buildResultIdentityProof(payload, resultPayload, trace) {
+    const adapter = String(
+      payload.adapter || payload.identityAdapter || 'external'
+    )
+    const proofMode = normalizeProofMode(payload, adapter)
+
+    if (
+      adapter === 'rehearsal-devnet' ||
+      payload.signerPrivateKey ||
+      payload.privateKey
+    ) {
+      const signer = resolveInternalSigner(payload)
+
+      if (
+        resultPayload.playerAddress &&
+        normalizeAddress(resultPayload.playerAddress) !==
+          normalizeAddress(signer.address)
+      ) {
+        throw new Error('Signer address does not match participant address')
+      }
+
+      const signature = signPayloadWithPrivateKey(
+        signer.privateKeyHex,
+        resultPayload
+      )
+
+      return {
+        address: signature.address,
+        signature,
+        identityProof: {
+          type: 'idena-arc-signature-proof-v0',
+          status: 'verified',
+          mode: adapter === 'rehearsal-devnet' ? proofMode : 'internal-signer',
+        },
+      }
+    }
+
+    if (proofMode === 'node-signature') {
+      const signature = await createNodeSignature(payload, resultPayload)
+
+      if (
+        resultPayload.playerAddress &&
+        normalizeAddress(resultPayload.playerAddress) !==
+          normalizeAddress(signature.address)
+      ) {
+        throw new Error(
+          'Node signer address does not match participant address'
+        )
+      }
+
+      return {
+        address: signature.address,
+        signature,
+        identityProof: {
+          type: 'idena-node-signature-proof-v0',
+          status: 'verified',
+          mode: proofMode,
+        },
+      }
+    }
+
+    if (proofMode === 'tx-anchor') {
+      if (!resultPayload.playerAddress) {
+        throw new Error('Address is required for tx-anchor proof mode')
+      }
+
+      const identityProof = buildTransactionProofAnchor({
+        resultPayload,
+        trace,
+        proof: {
+          txHash: payload.proofTxHash,
+          cid: payload.proofCid,
+          contract: payload.proofContract,
+        },
+      })
+
+      return {
+        address: resultPayload.playerAddress,
+        signature: null,
+        identityProof,
+      }
+    }
+
+    throw new Error(`Unsupported IdenaArc proof mode: ${proofMode}`)
+  }
+
+  async function resolveParticipantAddressForResult(payload, participant = {}) {
+    const adapter = String(
+      payload.adapter || payload.identityAdapter || 'external'
+    )
+    const payloadAddress = trimString(payload.address)
+    const participantAddress = trimString(participant.address)
+
+    if (payloadAddress) {
+      return normalizeAddress(payloadAddress)
+    }
+
+    if (participantAddress) {
+      return normalizeAddress(participantAddress)
+    }
+
+    if (payload.signerPrivateKey || payload.privateKey) {
+      return normalizeAddress(
+        privateKeyToAddress(payload.signerPrivateKey || payload.privateKey)
+      )
+    }
+
+    if (adapter === 'rehearsal-devnet') {
+      return normalizeAddress(getDevnetSignerDetails().address)
+    }
+
+    if (normalizeProofMode(payload, adapter) === 'node-signature') {
+      const connection = resolveRpcConnection(payload)
+
+      if (isLoopbackRpcUrl(connection.url)) {
+        const coinbase = await callNodeRpc(
+          connection,
+          'dna_getCoinbaseAddr',
+          []
+        ).catch(() => '')
+
+        if (coinbase) {
+          return normalizeAddress(coinbase)
+        }
+      }
+    }
+
+    return null
+  }
+
+  function resolveRpcConnection(payload = {}) {
+    const adapter = String(
+      payload.adapter || payload.identityAdapter || 'external'
+    )
+
+    if (adapter === 'rehearsal-devnet') {
+      if (
+        !validationDevnet ||
+        typeof validationDevnet.getConnectionDetails !== 'function'
+      ) {
+        throw new Error('Validation rehearsal network is not available')
+      }
+
+      const connection = validationDevnet.getConnectionDetails()
+      return {
+        adapter,
+        url: connection.url,
+        apiKey: connection.apiKey,
+      }
+    }
+
+    return {
+      adapter: 'external',
+      url: String(payload.rpcUrl || payload.url || '').trim(),
+      apiKey: String(payload.apiKey || payload.key || '').trim(),
+    }
+  }
+
+  async function resolveIdentity(payload = {}) {
+    const adapter = String(
+      payload.adapter || payload.identityAdapter || 'external'
+    )
+    let connection
+    try {
+      connection = resolveRpcConnection(payload)
+    } catch (error) {
+      if (adapter !== 'rehearsal-devnet') {
+        throw error
+      }
+
+      connection = {
+        adapter,
+        url: '',
+        apiKey: '',
+        error: error.message,
+      }
+    }
+    let address = String(payload.address || '').trim()
+
+    if (!address && connection.adapter === 'rehearsal-devnet') {
+      const signer = getOptionalDevnetSignerDetails()
+      address = signer && signer.address ? signer.address : ''
+    }
+
+    if (
+      !address &&
+      connection.adapter === 'external' &&
+      isLoopbackRpcUrl(connection.url)
+    ) {
+      address = await callNodeRpc(connection, 'dna_getCoinbaseAddr', []).catch(
+        () => ''
+      )
+    }
+
+    if (!address && connection.adapter === 'rehearsal-devnet') {
+      const rehearsalEpoch = connection.url
+        ? await callNodeRpc(connection, 'dna_epoch', []).catch((error) => ({
+            error: error.message,
+          }))
+        : {
+            error:
+              connection.error ||
+              'Rehearsal identity is not available before the devnet signer is ready',
+          }
+
+      return {
+        ok: true,
+        adapter: connection.adapter,
+        address: null,
+        epoch: rehearsalEpoch,
+        identity: null,
+        identityStatus: null,
+        unresolved: true,
+        reason: 'rehearsal_identity_unavailable',
+      }
+    }
+
+    if (!address) {
+      throw new Error(
+        'Idena address is required, or connect to a local node that exposes dna_getCoinbaseAddr'
+      )
+    }
+
+    const [epoch, identity] = await Promise.all([
+      callNodeRpc(connection, 'dna_epoch', []).catch((error) => ({
+        error: rpcErrorMessage(error),
+      })),
+      callNodeRpc(connection, 'dna_identity', [address]).catch((error) => ({
+        error: rpcErrorMessage(error),
+      })),
+    ])
+    const rpcUnavailable =
+      isFailedRpcResult(epoch) &&
+      isFailedRpcResult(identity) &&
+      epoch.error === identity.error
+    let hint = null
+
+    if (rpcUnavailable) {
+      hint =
+        connection.adapter === 'external'
+          ? 'If the validation rehearsal devnet is running, choose the Rehearsal devnet adapter instead of External RPC.'
+          : 'The rehearsal devnet RPC is not reachable yet.'
+    }
+
+    return {
+      ok: !rpcUnavailable,
+      adapter: connection.adapter,
+      address,
+      epoch,
+      identity,
+      identityStatus:
+        identity && typeof identity.state === 'string' ? identity.state : null,
+      rpcReachable: !rpcUnavailable,
+      error: rpcUnavailable
+        ? `Idena RPC is unavailable at ${connection.url}: ${epoch.error}`
+        : null,
+      hint,
+    }
+  }
+
+  function ensureParticipant(session, payload = {}) {
+    const participantId = safeId(
+      payload.participantId || payload.address || 'player-1',
+      'player-1'
+    )
+    const participants =
+      session.participants && typeof session.participants === 'object'
+        ? {...session.participants}
+        : {}
+    const existing = participants[participantId] || {}
+
+    participants[participantId] = {
+      participantId,
+      address: String(payload.address || existing.address || '').trim() || null,
+      identityStatus: payload.identityStatus || existing.identityStatus || null,
+      adapter: payload.adapter || existing.adapter || 'external',
+      joinedAt: existing.joinedAt || isoNow(),
+      ...existing,
+    }
+    session.participants = participants
+
+    return participants[participantId]
+  }
+
+  async function createSession(payload = {}) {
+    const createdAt = isoNow()
+    const sessionId =
+      safeId(payload.sessionId, '') ||
+      `idena-arc-local-${Date.now().toString(36)}`
+    const startTime = payload.startTime
+      ? new Date(payload.startTime)
+      : new Date(Date.now())
+    const endTime = new Date(
+      startTime.getTime() +
+        (Number(payload.playDurationMs) > 0
+          ? Number(payload.playDurationMs)
+          : DEFAULT_PLAY_DURATION_MS)
+    )
+    const submissionCutoff = new Date(
+      endTime.getTime() +
+        (Number(payload.gracePeriodMs) > 0
+          ? Number(payload.gracePeriodMs)
+          : DEFAULT_GRACE_PERIOD_MS)
+    )
+    const generator = {
+      ...getGeneratorDescriptor(),
+      ...(payload.generator || {}),
+    }
+    const session = {
+      protocol: PROTOCOL,
+      sessionId,
+      createdAt,
+      updatedAt: createdAt,
+      relay: {
+        type: 'local-file-v0',
+      },
+      manifest: {
+        protocol: PROTOCOL,
+        sessionId,
+        generator,
+        rehearsalEpochOrRound:
+          payload.rehearsalEpochOrRound || payload.epoch || null,
+        networkEntropy: payload.networkEntropy || `local-clock:${createdAt}`,
+        sessionNonce:
+          payload.sessionNonce || sha256Hex(`${sessionId}:${createdAt}`),
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+        submissionCutoff: submissionCutoff.toISOString(),
+      },
+      participants: {},
+      finalSeed: null,
+      game: null,
+      results: [],
+    }
+
+    if (payload.participantId || payload.address) {
+      ensureParticipant(session, payload)
+    }
+
+    await writeSession(session)
+    return session
+  }
+
+  async function joinSession(payload = {}) {
+    const session = await readSession(payload.sessionId)
+    const participant = ensureParticipant(session, payload)
+
+    await writeSession(session)
+    return {
+      session,
+      participant,
+    }
+  }
+
+  async function commitSalt(payload = {}) {
+    const session = await readSession(payload.sessionId)
+    const participant = ensureParticipant(session, payload)
+    const salt = String(payload.salt || randomSaltHex()).trim()
+    const commitment = buildSaltCommitment(salt)
+
+    participant.commitment = commitment
+    participant.committedAt = isoNow()
+    participant.revealedSaltHash = null
+    participant.revealedAt = null
+
+    await writeSession(session)
+
+    return {
+      session,
+      participant,
+      salt,
+      commitment,
+    }
+  }
+
+  async function revealSalt(payload = {}) {
+    const session = await readSession(payload.sessionId)
+    const participant = ensureParticipant(session, payload)
+    const salt = String(payload.salt || '').trim()
+
+    assertSaltCommitment(salt, participant.commitment)
+
+    participant.revealedSaltHash = sha256Prefixed(salt)
+    participant.revealedAt = isoNow()
+    participant.revealAccepted = true
+
+    await writeSession(session)
+
+    return {
+      session,
+      participant,
+      salt,
+    }
+  }
+
+  async function computeFinalSeed(payload = {}) {
+    const session = await readSession(payload.sessionId)
+    const participants = Object.values(session.participants || {})
+    const revealPayloads = (
+      Array.isArray(payload.reveals) ? payload.reveals : []
+    )
+      .map((item) => ({
+        participantId: safeId(item.participantId || item.address, ''),
+        salt: item.salt,
+      }))
+      .filter((item) => item.participantId && item.salt)
+    const revealsByParticipant = new Map(
+      revealPayloads.map((item) => [item.participantId, item.salt])
+    )
+    const reveals = participants
+      .map((participant) => {
+        const salt = revealsByParticipant.get(participant.participantId)
+
+        if (!salt) {
+          return null
+        }
+
+        assertSaltCommitment(salt, participant.commitment)
+        return {
+          participantId: participant.participantId,
+          salt,
+        }
+      })
+      .filter(Boolean)
+
+    if (reveals.length < 1) {
+      throw new Error('At least one salt reveal is required')
+    }
+
+    const seed = deriveFinalSeed({
+      sessionId: session.sessionId,
+      generator: session.manifest.generator,
+      rehearsalEpochOrRound: session.manifest.rehearsalEpochOrRound,
+      commitments: participants
+        .filter((participant) => participant.commitment)
+        .map((participant) => ({
+          participantId: participant.participantId,
+          commitment: participant.commitment,
+        })),
+      reveals,
+      networkEntropy: session.manifest.networkEntropy,
+      sessionNonce: session.manifest.sessionNonce,
+    })
+
+    session.finalSeed = {
+      ...seed,
+      computedAt: isoNow(),
+    }
+
+    await writeSession(session)
+
+    return {
+      session,
+      ...session.finalSeed,
+    }
+  }
+
+  function runSidecar(payload) {
+    const command = pythonCommand || process.env.IDENA_ARC_PYTHON || 'python3'
+
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, [sidecarPath], {
+        cwd: rootDir,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      let stderr = ''
+
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString('utf8')
+      })
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString('utf8')
+      })
+      child.on('error', reject)
+      child.on('exit', (code) => {
+        if (code !== 0) {
+          reject(
+            new Error(
+              `IdenaArc sidecar exited with code ${code}: ${stderr.slice(
+                0,
+                400
+              )}`
+            )
+          )
+          return
+        }
+
+        resolve(parseJsonOutput(stdout, stderr))
+      })
+      child.stdin.end(`${JSON.stringify(payload)}\n`)
+    })
+  }
+
+  async function generateGame(payload = {}) {
+    let session = await readSession(payload.sessionId)
+
+    if (!session.finalSeed) {
+      const computed = await computeFinalSeed(payload)
+      session = computed.session
+    }
+
+    const game = await runSidecar({
+      command: 'generate',
+      seed: session.finalSeed.finalSeed,
+      generator: session.manifest.generator,
+    })
+
+    session.game = {
+      ...game,
+      generatedAt: isoNow(),
+    }
+
+    await writeSession(session)
+
+    return {
+      session,
+      game: session.game,
+    }
+  }
+
+  async function replayTrace(session, actions) {
+    const game =
+      session.game || (await generateGame({sessionId: session.sessionId})).game
+
+    return runSidecar({
+      command: 'replay',
+      seed: session.finalSeed.finalSeed,
+      generator: session.manifest.generator,
+      initialState: game.initialState,
+      actions,
+    })
+  }
+
+  function verifyResultSignature(resultPayload, signature, expectedAddress) {
+    if (!signature) {
+      return false
+    }
+
+    if (signature.type === 'idena-node-dna-sign-v0') {
+      const expectedMessage = buildResultProofMessage(resultPayload)
+
+      return (
+        signature.message === expectedMessage &&
+        signature.messageHash ===
+          idenaSignatureHashPrefixed(expectedMessage, signature.format) &&
+        verifyIdenaSignature(
+          signature.message,
+          signature.value,
+          expectedAddress,
+          signature.format
+        )
+      )
+    }
+
+    return verifyPayloadSignature(resultPayload, signature, expectedAddress)
+  }
+
+  async function submitTrace(payload = {}) {
+    let session = await readSession(payload.sessionId)
+
+    if (!session.game) {
+      session = (await generateGame(payload)).session
+    }
+
+    const participant = ensureParticipant(session, payload)
+    participant.address = await resolveParticipantAddressForResult(
+      payload,
+      participant
+    )
+    const actions = normalizeActions(payload.actions)
+    const replay = await replayTrace(session, actions)
+    const trace = {
+      protocol: TRACE_PROTOCOL,
+      sessionId: session.sessionId,
+      playerAddress: participant.address,
+      participantId: participant.participantId,
+      initialStateHash: session.game.initialStateHash,
+      actions: replay.actions || actions,
+      finalStateHash: replay.finalStateHash,
+      score: replay.score,
+      feedback:
+        payload.feedback && typeof payload.feedback === 'object'
+          ? payload.feedback
+          : {},
+    }
+    const traceHash = hashJsonPrefixed(trace)
+    const resultId = `${participant.participantId}-${Date.now().toString(36)}`
+    const resultPayload = {
+      protocol: RESULT_PROTOCOL,
+      sessionId: session.sessionId,
+      playerAddress: participant.address,
+      playerIdentityStatus: participant.identityStatus,
+      generatorCid: session.manifest.generator.cid,
+      generatorHash: session.manifest.generator.hash,
+      generatorVersion: session.manifest.generator.version,
+      seedCommitments: Object.values(session.participants || {})
+        .map((item) => item.commitment)
+        .filter(Boolean),
+      finalSeedHash: session.finalSeed.finalSeedHash,
+      startTime: session.manifest.startTime,
+      endTime: session.manifest.endTime,
+      score: replay.score,
+      result: replay.completed ? 'completed' : 'attempted',
+      traceHash,
+      clientVersion: 'idena-arc-client-v0.1.0',
+      createdAt: isoNow(),
+    }
+    const identityProof = await buildResultIdentityProof(
+      payload,
+      resultPayload,
+      trace
+    )
+    const result = {
+      ...resultPayload,
+      playerAddress: identityProof.address,
+      signature: identityProof.signature,
+      identityProof: identityProof.identityProof,
+    }
+    const signatureValid = verifyResultSignature(
+      resultPayload,
+      identityProof.signature,
+      result.playerAddress
+    )
+    const anchorValid = verifyTransactionProofAnchor(
+      resultPayload,
+      identityProof.identityProof
+    )
+    const replayVerified = true
+    const verified = replayVerified && (signatureValid || anchorValid)
+    const bundle = {
+      protocol: 'idena-arc-trace-bundle-v0',
+      resultId,
+      verified,
+      replayVerified,
+      signatureValid,
+      anchorValid,
+      result,
+      trace,
+      replay,
+    }
+
+    await writeJson(traceBundlePath(session.sessionId, resultId), bundle)
+
+    session.results = (Array.isArray(session.results) ? session.results : [])
+      .filter((item) => item.resultId !== resultId)
+      .concat({
+        resultId,
+        participantId: participant.participantId,
+        playerAddress: result.playerAddress,
+        score: result.score,
+        traceHash,
+        verified,
+        storedAt: isoNow(),
+      })
+
+    await writeSession(session)
+
+    return {
+      session,
+      bundle,
+    }
+  }
+
+  async function verifyTraceBundle(payload = {}) {
+    const bundle = payload.bundle || (await readJson(payload.bundlePath, null))
+
+    if (!bundle) {
+      throw new Error('Trace bundle is required')
+    }
+
+    const session = await readSession(bundle.result.sessionId)
+    const actions = normalizeActions(bundle.trace.actions)
+    const replay = await replayTrace(session, actions)
+    const expectedTrace = {
+      ...bundle.trace,
+      actions: replay.actions || actions,
+      finalStateHash: replay.finalStateHash,
+      score: replay.score,
+    }
+    const traceMatches =
+      hashJsonPrefixed(expectedTrace) === bundle.result.traceHash &&
+      replay.finalStateHash === bundle.trace.finalStateHash &&
+      replay.score === bundle.result.score
+    const resultPayload = {...bundle.result}
+    const {signature, identityProof} = resultPayload
+    delete resultPayload.signature
+    delete resultPayload.identityProof
+    const signatureValid = verifyResultSignature(
+      resultPayload,
+      signature,
+      bundle.result.playerAddress
+    )
+    const anchorValid = verifyTransactionProofAnchor(
+      resultPayload,
+      identityProof
+    )
+
+    return {
+      ok: traceMatches && (signatureValid || anchorValid),
+      traceMatches,
+      signatureValid,
+      anchorValid,
+      replay,
+    }
+  }
+
+  async function uploadTraceBundle(payload = {}) {
+    const bundle = payload.bundle || (await readJson(payload.bundlePath, null))
+
+    if (!bundle) {
+      throw new Error('Trace bundle is required')
+    }
+
+    const connection = resolveRpcConnection(payload)
+    const result = await callNodeRpc(connection, 'ipfs_add', [
+      canonicalJson(bundle),
+      Boolean(payload.pin),
+    ])
+
+    return {
+      ok: true,
+      cid: result && (result.cid || result.Hash || result.hash || result),
+      result,
+    }
+  }
+
+  async function status() {
+    await fs.ensureDir(resolveBaseDir())
+    const rehearsalDevnet =
+      validationDevnet && typeof validationDevnet.getStatus === 'function'
+        ? await validationDevnet.getStatus().catch((error) => ({
+            active: false,
+            error: rpcErrorMessage(error),
+          }))
+        : null
+    const rehearsalConnection =
+      validationDevnet &&
+      typeof validationDevnet.getConnectionDetails === 'function'
+        ? (() => {
+            try {
+              const connection = validationDevnet.getConnectionDetails()
+              return {
+                adapter: 'rehearsal-devnet',
+                url: connection.url,
+                apiKey: connection.apiKey,
+              }
+            } catch {
+              return null
+            }
+          })()
+        : null
+    const rehearsalSigner = getOptionalDevnetSignerDetails()
+
+    return {
+      ok: true,
+      protocol: PROTOCOL,
+      baseDir: resolveBaseDir(),
+      generator: getGeneratorDescriptor(),
+      rehearsalDevnet,
+      rehearsalConnection,
+      rehearsalSigner: rehearsalSigner
+        ? {
+            adapter: rehearsalSigner.adapter,
+            address: rehearsalSigner.address,
+          }
+        : null,
+      recommendedAdapter: rehearsalConnection ? 'rehearsal-devnet' : 'external',
+      sessions: (await listSessions()).slice(0, 10),
+    }
+  }
+
+  return {
+    status,
+    listSessions,
+    resolveIdentity,
+    createSession,
+    joinSession,
+    commitSalt,
+    revealSalt,
+    computeFinalSeed,
+    generateGame,
+    submitTrace,
+    verifyTraceBundle,
+    uploadTraceBundle,
+  }
+}
+
+module.exports = {
+  PROTOCOL,
+  TRACE_PROTOCOL,
+  RESULT_PROTOCOL,
+  createIdenaArcManager,
+}

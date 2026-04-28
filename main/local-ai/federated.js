@@ -1,0 +1,1835 @@
+const crypto = require('crypto')
+const path = require('path')
+const {
+  hasConcreteAdapterDelta,
+  resolveAdapterContract,
+} = require('./adapter-contract')
+const {createLocalAiStorage} = require('./storage')
+const {LOCAL_AI_BASE_MODEL_ID} = require('./constants')
+const {
+  normalizeModelReference,
+  resolveModelReference,
+} = require('./model-reference')
+
+const UPDATE_BUNDLE_VERSION = 1
+const RECEIVED_INDEX_VERSION = 1
+const AGGREGATION_RESULT_VERSION = 1
+const MIN_COMPATIBLE_BUNDLES = 2
+const MIN_DISTINCT_IDENTITIES = 2
+const FEDERATED_AUDIT_POLICY_VERSION = 1
+const GOVERNANCE_EXCLUSION_EPOCHS = 1
+const DEFAULT_BASE_MODEL_ID = LOCAL_AI_BASE_MODEL_ID
+const PLACEHOLDER_IDENTITY = 'identity-unavailable'
+const PLACEHOLDER_SIGNATURE_REASON = 'idena_signing_unavailable_in_main_process'
+const GOVERNANCE_EXCLUSION_RULE =
+  'reported_flips_without_reward_excluded_for_one_epoch'
+const CORROBORATION_POLICY =
+  'epoch+delta_type+adapter_format+adapter_sha256+training_config_hash+eligible_flip_hashes'
+
+function normalizeEpoch(value) {
+  const epoch = Number.parseInt(value, 10)
+  return Number.isFinite(epoch) && epoch >= 0 ? epoch : null
+}
+
+function normalizeIdentity(value) {
+  if (!value) {
+    return null
+  }
+
+  if (typeof value === 'string') {
+    const identity = value.trim()
+    return identity || null
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const identity = String(value.address || value.identity || '').trim()
+    return identity || null
+  }
+
+  return null
+}
+
+function normalizeNonNegativeInteger(value, fallback = 0) {
+  const parsed = Number.parseInt(value, 10)
+
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed
+  }
+
+  return fallback
+}
+
+function normalizeFilePath(filePath) {
+  const nextPath = String(filePath || '').trim()
+  return nextPath ? path.resolve(nextPath) : null
+}
+
+function assertBundlePath(storage, filePath) {
+  const sourcePath = normalizeFilePath(filePath)
+
+  if (!sourcePath) {
+    return null
+  }
+
+  const allowedRoots = [
+    storage.resolveLocalAiPath('incoming'),
+    storage.resolveLocalAiPath('bundles'),
+  ]
+    .map((rootPath) => path.resolve(rootPath))
+    .filter(Boolean)
+
+  for (const allowedRoot of allowedRoots) {
+    const allowedPrefix = `${allowedRoot}${path.sep}`
+
+    if (sourcePath === allowedRoot || sourcePath.startsWith(allowedPrefix)) {
+      return sourcePath
+    }
+  }
+
+  throw new Error('bundle_path_outside_incoming')
+}
+
+function normalizeSignature(signature) {
+  if (!signature || typeof signature !== 'object' || Array.isArray(signature)) {
+    return null
+  }
+
+  const value = String(signature.value || '').trim()
+  const type = String(signature.type || '').trim()
+
+  if (!value || !type) {
+    return null
+  }
+
+  return {
+    value,
+    type,
+    signed: Boolean(signature.signed),
+    reason: String(signature.reason || '').trim() || null,
+  }
+}
+
+function manifestPath(storage, epoch) {
+  return storage.resolveLocalAiPath('manifests', `epoch-${epoch}-manifest.json`)
+}
+
+function trainingCandidatePackagePath(storage, epoch) {
+  return storage.resolveLocalAiPath(
+    'training-candidates',
+    `epoch-${epoch}-candidates.json`
+  )
+}
+
+function bundlePath(storage, epoch, identity) {
+  const safeIdentity =
+    String(identity || PLACEHOLDER_IDENTITY)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || PLACEHOLDER_IDENTITY
+
+  return storage.resolveLocalAiPath(
+    'bundles',
+    `update-${epoch}-${safeIdentity}.json`
+  )
+}
+
+function sanitizeArtifactFileName(fileName, fallback = 'adapter.bin') {
+  const baseName = path.basename(String(fileName || '').trim())
+  const normalized = baseName.replace(/[^a-zA-Z0-9._-]+/g, '-')
+  return normalized || fallback
+}
+
+function bundleArtifactPath(storage, epoch, identity, fileName) {
+  const nextBundlePath = bundlePath(storage, epoch, identity)
+  return path.join(
+    path.dirname(nextBundlePath),
+    `${path.basename(nextBundlePath, '.json')}-${sanitizeArtifactFileName(
+      fileName
+    )}`
+  )
+}
+
+function receivedIndexPath(storage) {
+  return storage.resolveLocalAiPath('received', 'index.json')
+}
+
+function receivedBundlePath(storage, epoch, bundleId) {
+  return storage.resolveLocalAiPath(
+    'received',
+    String(epoch),
+    `${bundleId}.json`
+  )
+}
+
+function receivedArtifactPath(storage, epoch, bundleId, fileName) {
+  return storage.resolveLocalAiPath(
+    'received',
+    String(epoch),
+    `${bundleId}-${sanitizeArtifactFileName(fileName)}`
+  )
+}
+
+function aggregationResultPath(storage) {
+  return storage.resolveLocalAiPath('aggregation', 'aggregated-model.json')
+}
+
+function buildSignaturePayload(payload) {
+  return JSON.stringify(payload)
+}
+
+async function resolveIdentity(getIdentity) {
+  if (typeof getIdentity !== 'function') {
+    return {
+      identity: PLACEHOLDER_IDENTITY,
+      isPlaceholder: true,
+      source: 'placeholder',
+    }
+  }
+
+  try {
+    const resolved = normalizeIdentity(await getIdentity())
+
+    if (resolved) {
+      return {
+        identity: resolved,
+        isPlaceholder: false,
+        source: 'idena-identity',
+      }
+    }
+  } catch {
+    // Bundle generation must still work locally without identity plumbing.
+  }
+
+  return {
+    identity: PLACEHOLDER_IDENTITY,
+    isPlaceholder: true,
+    source: 'placeholder',
+  }
+}
+
+function createPlaceholderSignature(storage, payload) {
+  return {
+    value: storage.sha256(buildSignaturePayload(payload)),
+    type: 'placeholder_sha256',
+    signed: false,
+    reason: PLACEHOLDER_SIGNATURE_REASON,
+  }
+}
+
+async function signBundlePayload({
+  storage,
+  payload,
+  identityInfo,
+  signPayload,
+}) {
+  if (identityInfo.isPlaceholder || typeof signPayload !== 'function') {
+    return createPlaceholderSignature(storage, payload)
+  }
+
+  try {
+    const signature = String(
+      await signPayload(buildSignaturePayload(payload))
+    ).trim()
+
+    if (!signature) {
+      return {
+        ...createPlaceholderSignature(storage, payload),
+        reason: 'idena_sign_returned_empty_signature',
+      }
+    }
+
+    return {
+      value: signature,
+      type: 'idena_rpc_signature',
+      signed: true,
+      reason: null,
+    }
+  } catch {
+    return {
+      ...createPlaceholderSignature(storage, payload),
+      reason: 'idena_sign_failed',
+    }
+  }
+}
+
+function computeBundleId(storage, bundle) {
+  return storage.sha256(JSON.stringify(bundle))
+}
+
+function containsRawPayload(value, depth = 0) {
+  if (depth > 6 || value == null) {
+    return false
+  }
+
+  if (typeof value === 'string') {
+    return value.startsWith('data:image/')
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => containsRawPayload(item, depth + 1))
+  }
+
+  if (typeof value !== 'object') {
+    return false
+  }
+
+  return Object.entries(value).some(([key, item]) => {
+    if (
+      [
+        'images',
+        'leftImage',
+        'rightImage',
+        'leftFrames',
+        'rightFrames',
+        'privateHex',
+        'publicHex',
+      ].includes(key)
+    ) {
+      return true
+    }
+
+    return containsRawPayload(item, depth + 1)
+  })
+}
+
+function defaultReceivedIndex() {
+  return {
+    version: RECEIVED_INDEX_VERSION,
+    bundles: [],
+  }
+}
+
+function normalizeReceivedEntry(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return null
+  }
+
+  const bundleId = String(item.bundleId || '').trim()
+  const nonce = String(item.nonce || '').trim()
+  const storedPath = String(item.storedPath || '').trim()
+  const importedAt = String(item.importedAt || '').trim()
+  const identity = normalizeIdentity(item.identity)
+  const epoch = normalizeEpoch(item.epoch)
+
+  if (!bundleId || !nonce || !storedPath || !importedAt || epoch === null) {
+    return null
+  }
+
+  return {
+    bundleId,
+    nonce,
+    storedPath,
+    artifactStoredPath: String(item.artifactStoredPath || '').trim() || null,
+    importedAt,
+    identity: identity || PLACEHOLDER_IDENTITY,
+    epoch,
+    baseModelId: String(item.baseModelId || '').trim() || DEFAULT_BASE_MODEL_ID,
+    baseModelHash: String(item.baseModelHash || '').trim() || null,
+    signatureType: String(item.signatureType || '').trim() || null,
+    signed: Boolean(item.signed),
+  }
+}
+
+function normalizeReceivedIndex(value) {
+  const source =
+    value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const bundles = Array.isArray(source.bundles)
+    ? source.bundles.map(normalizeReceivedEntry).filter(Boolean)
+    : []
+
+  return {
+    version: RECEIVED_INDEX_VERSION,
+    bundles,
+  }
+}
+
+function normalizeGovernance(value, currentEpoch = null) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const source = String(value.source || '').trim()
+  const exclusionRule = String(
+    value.exclusionRule || GOVERNANCE_EXCLUSION_RULE
+  ).trim()
+  const exclusionReason = String(value.exclusionReason || '').trim() || null
+  const lastPenaltyType = String(value.lastPenaltyType || '').trim() || null
+  const excludedUntilEpoch = normalizeEpoch(value.excludedUntilEpoch)
+  const lastPenaltyEpoch = normalizeEpoch(value.lastPenaltyEpoch)
+  const lastRewardedEpoch = normalizeEpoch(value.lastRewardedEpoch)
+  const cooldownEpochsRemaining = normalizeNonNegativeInteger(
+    value.cooldownEpochsRemaining,
+    0
+  )
+  const exclusionWindowEpochs = normalizeNonNegativeInteger(
+    value.exclusionWindowEpochs,
+    GOVERNANCE_EXCLUSION_EPOCHS
+  )
+
+  if (!source || !exclusionRule) {
+    return null
+  }
+
+  const excludedCurrentEpoch =
+    Boolean(value.excludedCurrentEpoch) ||
+    cooldownEpochsRemaining > 0 ||
+    (currentEpoch !== null &&
+      excludedUntilEpoch !== null &&
+      currentEpoch <= excludedUntilEpoch)
+  const eligible = Boolean(value.eligible) && !excludedCurrentEpoch
+
+  return {
+    eligible,
+    source,
+    exclusionRule,
+    exclusionWindowEpochs,
+    excludedCurrentEpoch,
+    cooldownEpochsRemaining,
+    excludedUntilEpoch,
+    exclusionReason,
+    lastPenaltyEpoch,
+    lastPenaltyType,
+    lastRewardedEpoch,
+    lastSessionReportedFlipPenalty: Boolean(
+      value.lastSessionReportedFlipPenalty
+    ),
+  }
+}
+
+async function resolveGovernance({
+  candidatePackage,
+  manifest,
+  epoch,
+  identity,
+  getGovernanceStatus,
+}) {
+  let resolved = null
+
+  if (typeof getGovernanceStatus === 'function') {
+    try {
+      resolved = await getGovernanceStatus({
+        candidatePackage,
+        manifest,
+        epoch,
+        identity,
+      })
+    } catch {
+      resolved = null
+    }
+  }
+
+  if (!resolved) {
+    resolved = (candidatePackage &&
+      candidatePackage.governance &&
+      typeof candidatePackage.governance === 'object' &&
+      candidatePackage.governance) ||
+      (manifest &&
+        manifest.governance &&
+        typeof manifest.governance === 'object' &&
+        manifest.governance) || {
+        eligible: true,
+        source: 'unverified_local_default',
+        exclusionRule: GOVERNANCE_EXCLUSION_RULE,
+        exclusionWindowEpochs: GOVERNANCE_EXCLUSION_EPOCHS,
+        excludedCurrentEpoch: false,
+        cooldownEpochsRemaining: 0,
+        excludedUntilEpoch: null,
+        exclusionReason: null,
+        lastPenaltyEpoch: null,
+        lastPenaltyType: null,
+        lastRewardedEpoch: null,
+        lastSessionReportedFlipPenalty: false,
+      }
+  }
+
+  return normalizeGovernance(resolved, epoch)
+}
+
+function buildAuditMetadata(storage, {candidatePackage, manifest, governance}) {
+  return {
+    policyVersion: FEDERATED_AUDIT_POLICY_VERSION,
+    trainingPackage: {
+      reviewStatus:
+        String(candidatePackage && candidatePackage.reviewStatus).trim() ||
+        null,
+      reviewedAt:
+        String(candidatePackage && candidatePackage.reviewedAt).trim() || null,
+      federatedReady: Boolean(
+        candidatePackage && candidatePackage.federatedReady
+      ),
+      eligibleCount: resolveExcludedCount(
+        candidatePackage && candidatePackage.eligibleCount,
+        candidatePackage && candidatePackage.items
+      ),
+      excludedCount: resolveExcludedCount(
+        candidatePackage && candidatePackage.excludedCount,
+        candidatePackage && candidatePackage.excluded
+      ),
+      packageSha256: storage.sha256(JSON.stringify(candidatePackage || {})),
+      manifestSha256: storage.sha256(JSON.stringify(manifest || {})),
+    },
+    redundancy: {
+      minimumCompatibleBundles: MIN_COMPATIBLE_BUNDLES,
+      minimumDistinctIdentities: MIN_DISTINCT_IDENTITIES,
+      corroborationPolicy: CORROBORATION_POLICY,
+      duplicateIdentityPolicy: 'reject_same_identity_same_epoch',
+    },
+    governance: {
+      exclusionRule: governance.exclusionRule,
+      exclusionWindowEpochs: governance.exclusionWindowEpochs,
+      source: governance.source,
+    },
+  }
+}
+
+function validateBundleShape(bundle) {
+  if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  if (bundle.version !== UPDATE_BUNDLE_VERSION) {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  if (bundle.bundleType !== 'local-ai-update') {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  if (
+    !bundle.payload ||
+    typeof bundle.payload !== 'object' ||
+    Array.isArray(bundle.payload)
+  ) {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  const {payload} = bundle
+  const signature = normalizeSignature(bundle.signature)
+  const epoch = normalizeEpoch(payload.epoch)
+  const identity = normalizeIdentity(payload.identity)
+  const publicModelId = String(payload.publicModelId || '').trim()
+  const publicVisionId = String(payload.publicVisionId || '').trim()
+  const runtimeBackend = String(payload.runtimeBackend || '').trim()
+  const reasonerBackend = String(payload.reasonerBackend || '').trim()
+  const visionBackend = String(payload.visionBackend || '').trim()
+  const contractVersion = String(payload.contractVersion || '').trim()
+  const baseModelId = String(payload.baseModelId || '').trim()
+  const baseModelHash = String(payload.baseModelHash || '').trim()
+  const nonce = String(payload.nonce || '').trim()
+  const generatedAt = String(payload.generatedAt || '').trim()
+  const deltaType = String(payload.deltaType || '').trim()
+  const adapterFormat = String(payload.adapterFormat || '').trim()
+  const adapterSha256 = String(payload.adapterSha256 || '').trim()
+  const trainingConfigHash = String(payload.trainingConfigHash || '').trim()
+  const adapterArtifact =
+    payload.adapterArtifact &&
+    typeof payload.adapterArtifact === 'object' &&
+    !Array.isArray(payload.adapterArtifact)
+      ? payload.adapterArtifact
+      : null
+  const adapterArtifactFile = String(
+    (adapterArtifact && adapterArtifact.file) || ''
+  ).trim()
+  const manifest =
+    payload.manifest && typeof payload.manifest === 'object'
+      ? payload.manifest
+      : null
+  const metrics =
+    payload.metrics && typeof payload.metrics === 'object'
+      ? payload.metrics
+      : null
+  const audit =
+    payload.audit &&
+    typeof payload.audit === 'object' &&
+    !Array.isArray(payload.audit)
+      ? payload.audit
+      : null
+  const auditTrainingPackage =
+    audit &&
+    audit.trainingPackage &&
+    typeof audit.trainingPackage === 'object' &&
+    !Array.isArray(audit.trainingPackage)
+      ? audit.trainingPackage
+      : null
+  const auditRedundancy =
+    audit &&
+    audit.redundancy &&
+    typeof audit.redundancy === 'object' &&
+    !Array.isArray(audit.redundancy)
+      ? audit.redundancy
+      : null
+  const governance = normalizeGovernance(payload.governance, epoch)
+  const eligibleFlipHashes = Array.isArray(payload.eligibleFlipHashes)
+    ? payload.eligibleFlipHashes.filter(Boolean)
+    : null
+  const auditPolicyVersion = normalizeNonNegativeInteger(
+    audit && audit.policyVersion,
+    -1
+  )
+  const minimumDistinctIdentities = normalizeNonNegativeInteger(
+    auditRedundancy && auditRedundancy.minimumDistinctIdentities,
+    -1
+  )
+  const minimumCompatibleBundles = normalizeNonNegativeInteger(
+    auditRedundancy && auditRedundancy.minimumCompatibleBundles,
+    -1
+  )
+  const corroborationPolicy = String(
+    (auditRedundancy && auditRedundancy.corroborationPolicy) || ''
+  ).trim()
+  const duplicateIdentityPolicy = String(
+    (auditRedundancy && auditRedundancy.duplicateIdentityPolicy) || ''
+  ).trim()
+  const trainingPackageSha256 = String(
+    (auditTrainingPackage && auditTrainingPackage.packageSha256) || ''
+  ).trim()
+  const trainingManifestSha256 = String(
+    (auditTrainingPackage && auditTrainingPackage.manifestSha256) || ''
+  ).trim()
+
+  if (
+    epoch === null ||
+    !identity ||
+    !baseModelId ||
+    !baseModelHash ||
+    !nonce ||
+    !generatedAt ||
+    !deltaType ||
+    !manifest ||
+    !String(manifest.file || '').trim() ||
+    !String(manifest.sha256 || '').trim() ||
+    !metrics ||
+    !eligibleFlipHashes ||
+    !signature ||
+    !audit ||
+    !auditTrainingPackage ||
+    !auditRedundancy ||
+    !governance
+  ) {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  if (
+    deltaType &&
+    deltaType !== 'none' &&
+    (!adapterFormat ||
+      !trainingConfigHash ||
+      (deltaType === 'lora_adapter' && !adapterSha256))
+  ) {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  if (
+    adapterArtifactFile &&
+    path.basename(adapterArtifactFile) !== adapterArtifactFile
+  ) {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  if (
+    auditPolicyVersion !== FEDERATED_AUDIT_POLICY_VERSION ||
+    minimumDistinctIdentities < MIN_DISTINCT_IDENTITIES ||
+    minimumCompatibleBundles < MIN_COMPATIBLE_BUNDLES ||
+    !corroborationPolicy ||
+    !duplicateIdentityPolicy ||
+    !trainingPackageSha256 ||
+    !trainingManifestSha256
+  ) {
+    return {ok: false, reason: 'schema_invalid'}
+  }
+
+  if (
+    baseModelHash !==
+    crypto.createHash('sha256').update(baseModelId).digest('hex')
+  ) {
+    return {ok: false, reason: 'base_model_mismatch'}
+  }
+
+  if (containsRawPayload(bundle)) {
+    return {ok: false, reason: 'contains_raw_payload'}
+  }
+
+  return {
+    ok: true,
+    payload,
+    signature,
+    epoch,
+    identity,
+    publicModelId,
+    publicVisionId,
+    runtimeBackend,
+    reasonerBackend,
+    visionBackend,
+    contractVersion,
+    baseModelId,
+    baseModelHash,
+    adapterFormat: adapterFormat || null,
+    adapterSha256: adapterSha256 || null,
+    adapterArtifact:
+      adapterArtifact &&
+      (adapterArtifactFile ||
+        Number.isFinite(Number(adapterArtifact.sizeBytes)))
+        ? {
+            file: adapterArtifactFile || null,
+            sizeBytes: Number.isFinite(Number(adapterArtifact.sizeBytes))
+              ? Number(adapterArtifact.sizeBytes)
+              : null,
+          }
+        : null,
+    trainingConfigHash: trainingConfigHash || null,
+    audit: {
+      policyVersion: auditPolicyVersion,
+      trainingPackage: {
+        reviewStatus:
+          String(auditTrainingPackage.reviewStatus || '').trim() || null,
+        reviewedAt:
+          String(auditTrainingPackage.reviewedAt || '').trim() || null,
+        federatedReady: Boolean(auditTrainingPackage.federatedReady),
+        eligibleCount: resolveExcludedCount(
+          auditTrainingPackage.eligibleCount,
+          null
+        ),
+        excludedCount: resolveExcludedCount(
+          auditTrainingPackage.excludedCount,
+          null
+        ),
+        packageSha256: trainingPackageSha256,
+        manifestSha256: trainingManifestSha256,
+      },
+      redundancy: {
+        minimumCompatibleBundles,
+        minimumDistinctIdentities,
+        corroborationPolicy,
+        duplicateIdentityPolicy,
+      },
+      governance: {
+        exclusionRule:
+          String(
+            (audit.governance && audit.governance.exclusionRule) || ''
+          ).trim() || governance.exclusionRule,
+        exclusionWindowEpochs: normalizeNonNegativeInteger(
+          audit.governance && audit.governance.exclusionWindowEpochs,
+          governance.exclusionWindowEpochs
+        ),
+        source:
+          String((audit.governance && audit.governance.source) || '').trim() ||
+          governance.source,
+      },
+    },
+    governance,
+    nonce,
+    eligibleFlipHashes,
+  }
+}
+
+function buildCorroborationGroupKey(validation) {
+  return JSON.stringify({
+    epoch: validation.epoch,
+    deltaType: String(validation.payload.deltaType || '').trim() || 'none',
+    adapterFormat:
+      String(validation.payload.adapterFormat || '').trim() || null,
+    adapterSha256:
+      String(validation.payload.adapterSha256 || '').trim() || null,
+    trainingConfigHash:
+      String(validation.payload.trainingConfigHash || '').trim() || null,
+    eligibleFlipHashes: normalizeFlipHashList(validation.eligibleFlipHashes),
+  })
+}
+
+function buildCorroborationGroups(compatibleBundles) {
+  const groups = new Map()
+
+  compatibleBundles.forEach(({entry, validation}) => {
+    const groupKey = buildCorroborationGroupKey(validation)
+    const nextGroup = groups.get(groupKey) || {
+      corroborationKey: groupKey,
+      epoch: validation.epoch,
+      deltaType: String(validation.payload.deltaType || '').trim() || 'none',
+      adapterFormat:
+        String(validation.payload.adapterFormat || '').trim() || null,
+      adapterSha256:
+        String(validation.payload.adapterSha256 || '').trim() || null,
+      trainingConfigHash:
+        String(validation.payload.trainingConfigHash || '').trim() || null,
+      bundleIds: [],
+      identities: new Set(),
+    }
+
+    nextGroup.bundleIds.push(entry.bundleId)
+    nextGroup.identities.add(validation.identity)
+    groups.set(groupKey, nextGroup)
+  })
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      corroborationKey: group.corroborationKey,
+      epoch: group.epoch,
+      deltaType: group.deltaType,
+      adapterFormat: group.adapterFormat,
+      adapterSha256: group.adapterSha256,
+      trainingConfigHash: group.trainingConfigHash,
+      bundleCount: group.bundleIds.length,
+      distinctIdentityCount: group.identities.size,
+      bundleIds: group.bundleIds,
+      identities: Array.from(group.identities).sort(),
+    }))
+    .sort(
+      (left, right) =>
+        right.distinctIdentityCount - left.distinctIdentityCount ||
+        right.bundleCount - left.bundleCount ||
+        String(left.corroborationKey).localeCompare(
+          String(right.corroborationKey)
+        )
+    )
+}
+
+async function verifyBundleSignature({
+  storage,
+  payload,
+  signature,
+  identity,
+  verifySignature,
+}) {
+  if (signature.type === 'placeholder_sha256') {
+    // Placeholder verification is only integrity-level, not identity-level.
+    const expected = storage.sha256(buildSignaturePayload(payload))
+
+    if (
+      signature.signed ||
+      identity !== PLACEHOLDER_IDENTITY ||
+      signature.reason !== PLACEHOLDER_SIGNATURE_REASON ||
+      signature.value !== expected
+    ) {
+      return {ok: false, reason: 'signature_invalid'}
+    }
+
+    return {ok: true, signed: false, signatureType: signature.type}
+  }
+
+  if (signature.type === 'idena_rpc_signature') {
+    if (typeof verifySignature !== 'function') {
+      return {ok: false, reason: 'signature_unverifiable'}
+    }
+
+    try {
+      const verified = await verifySignature({
+        payload,
+        identity,
+        signature: signature.value,
+      })
+
+      return verified
+        ? {ok: true, signed: true, signatureType: signature.type}
+        : {ok: false, reason: 'signature_invalid'}
+    } catch {
+      return {ok: false, reason: 'signature_invalid'}
+    }
+  }
+
+  return {ok: false, reason: 'signature_invalid'}
+}
+
+function normalizeFlipHashList(value) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .sort()
+    : []
+}
+
+function normalizePackageEligibleFlipHashes(candidatePackage = {}) {
+  return normalizeFlipHashList(
+    Array.isArray(candidatePackage.items)
+      ? candidatePackage.items.map((item) =>
+          item && typeof item === 'object' ? item.flipHash : null
+        )
+      : []
+  )
+}
+
+function normalizeManifestEligibleFlipHashes(manifest = {}) {
+  return normalizeFlipHashList(manifest.eligibleFlipHashes)
+}
+
+function resolveExcludedCount(value, fallbackCollection) {
+  const parsed = Number.parseInt(value, 10)
+
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed
+  }
+
+  return Array.isArray(fallbackCollection) ? fallbackCollection.length : 0
+}
+
+async function loadApprovedTrainingCandidatePackage(storage, epoch) {
+  const nextPackagePath = trainingCandidatePackagePath(storage, epoch)
+  const candidatePackage =
+    typeof storage.readTrainingCandidatePackage === 'function'
+      ? await storage.readTrainingCandidatePackage(nextPackagePath, null)
+      : await storage.readJson(nextPackagePath, null)
+
+  if (!candidatePackage) {
+    throw new Error(
+      `Local AI training package for epoch ${epoch} is unavailable`
+    )
+  }
+
+  if (
+    !candidatePackage.federatedReady ||
+    candidatePackage.reviewStatus !== 'approved'
+  ) {
+    throw new Error(
+      `Local AI training package for epoch ${epoch} is not approved for federated export`
+    )
+  }
+
+  return candidatePackage
+}
+
+function assertApprovedPackageMatchesManifest(
+  epoch,
+  candidatePackage,
+  manifest
+) {
+  const packageEligibleFlipHashes =
+    normalizePackageEligibleFlipHashes(candidatePackage)
+  const manifestEligibleFlipHashes =
+    normalizeManifestEligibleFlipHashes(manifest)
+  const packageExcludedCount = resolveExcludedCount(
+    candidatePackage && candidatePackage.excludedCount,
+    candidatePackage && candidatePackage.excluded
+  )
+  const manifestExcludedCount = resolveExcludedCount(
+    manifest && manifest.excludedCount,
+    manifest && manifest.excluded
+  )
+
+  if (
+    packageEligibleFlipHashes.length !== manifestEligibleFlipHashes.length ||
+    packageEligibleFlipHashes.some(
+      (flipHash, index) => flipHash !== manifestEligibleFlipHashes[index]
+    ) ||
+    packageExcludedCount !== manifestExcludedCount
+  ) {
+    throw new Error(
+      `Local AI manifest for epoch ${epoch} is out of sync with approved training package`
+    )
+  }
+}
+
+function buildAggregationSummary({
+  baseModelId,
+  baseModelHash,
+  compatibleBundles,
+  skipped,
+  distinctIdentityCount,
+  corroborationGroups,
+  deltaAvailability,
+  mode,
+  reason,
+}) {
+  const bestCorroborationDistinctIdentityCount = corroborationGroups.reduce(
+    (max, group) => Math.max(max, group.distinctIdentityCount),
+    0
+  )
+
+  return {
+    version: AGGREGATION_RESULT_VERSION,
+    aggregated: false,
+    mode,
+    baseModelId,
+    baseModelHash,
+    minimumCompatibleBundles: MIN_COMPATIBLE_BUNDLES,
+    minimumDistinctIdentities: MIN_DISTINCT_IDENTITIES,
+    compatibleCount: compatibleBundles.length,
+    distinctIdentityCount,
+    skippedCount: skipped.length,
+    acceptedCount: compatibleBundles.length,
+    rejectedCount: skipped.length,
+    bestCorroborationDistinctIdentityCount,
+    deltaAvailability,
+    reason,
+    generatedAt: new Date().toISOString(),
+    compatibleBundles: compatibleBundles.map(({entry, validation}) => ({
+      bundleId: entry.bundleId,
+      epoch: validation.epoch,
+      identity: validation.identity,
+      deltaType: String(validation.payload.deltaType || '').trim() || 'none',
+      adapterFormat:
+        String(validation.payload.adapterFormat || '').trim() || null,
+      adapterSha256:
+        String(validation.payload.adapterSha256 || '').trim() || null,
+      adapterArtifact:
+        validation.payload.adapterArtifact &&
+        typeof validation.payload.adapterArtifact === 'object'
+          ? validation.payload.adapterArtifact
+          : null,
+      trainingConfigHash:
+        String(validation.payload.trainingConfigHash || '').trim() || null,
+      storedPath: entry.storedPath,
+      artifactStoredPath: entry.artifactStoredPath || null,
+      governance: validation.governance,
+      audit: validation.audit,
+    })),
+    corroborationGroups,
+    skipped,
+  }
+}
+
+function buildImportResult({
+  accepted,
+  reason,
+  identity = null,
+  epoch = null,
+  bundlePath: legacyBundlePath = null,
+  sourceBundlePath = null,
+  storedPath = null,
+  artifactPath = null,
+  artifactStoredPath = null,
+  bundleId = null,
+  signed,
+  signatureType = null,
+}) {
+  const resolvedBundlePath =
+    sourceBundlePath !== null ? sourceBundlePath : legacyBundlePath
+
+  const result = {
+    accepted,
+    reason,
+    identity,
+    epoch,
+    bundlePath: resolvedBundlePath,
+    storedPath,
+    acceptedCount: accepted ? 1 : 0,
+    rejectedCount: accepted ? 0 : 1,
+  }
+
+  const resolvedArtifactPath =
+    artifactStoredPath !== null ? artifactStoredPath : artifactPath
+
+  if (resolvedArtifactPath) {
+    result.artifactPath = resolvedArtifactPath
+  }
+
+  if (bundleId) {
+    result.bundleId = bundleId
+  }
+
+  if (typeof signed === 'boolean') {
+    result.signed = signed
+  }
+
+  if (signatureType) {
+    result.signatureType = signatureType
+  }
+
+  return result
+}
+
+function logAcceptedBundles(logger, acceptedBundles) {
+  if (!logger || typeof logger.debug !== 'function') {
+    return
+  }
+
+  acceptedBundles.forEach((entry, index) => {
+    logger.debug('Local AI accepted bundle observed', {
+      index,
+      bundleId: entry.bundleId,
+      epoch: entry.epoch,
+      fileName: path.basename(entry.storedPath),
+    })
+  })
+}
+
+function logRejectedBundles(logger, skipped) {
+  if (!logger || typeof logger.debug !== 'function') {
+    return
+  }
+
+  skipped.forEach((entry, index) => {
+    logger.debug('Local AI bundle rejected during aggregation', {
+      index,
+      bundleId: entry.bundleId,
+      reason: entry.reason,
+    })
+  })
+}
+
+function logImportResult(logger, result) {
+  if (!logger || typeof logger.debug !== 'function') {
+    return
+  }
+
+  logger.debug(
+    result.accepted
+      ? 'Local AI update bundle accepted'
+      : 'Local AI update bundle rejected',
+    {
+      bundleId: result.bundleId || null,
+      epoch: result.epoch,
+      identity: result.identity,
+      fileName: result.bundlePath ? path.basename(result.bundlePath) : null,
+      artifactFileName: result.artifactPath
+        ? path.basename(result.artifactPath)
+        : null,
+      storedFileName: result.storedPath
+        ? path.basename(result.storedPath)
+        : null,
+      reason: result.reason,
+      acceptedCount: result.acceptedCount,
+      rejectedCount: result.rejectedCount,
+    }
+  )
+}
+
+function createLocalAiFederated({
+  logger,
+  isDev = false,
+  storage,
+  getIdentity,
+  signPayload,
+  verifySignature,
+  getBaseModelReference,
+  getGovernanceStatus,
+} = {}) {
+  const localAiStorage = storage || createLocalAiStorage()
+
+  async function materializeBundleAdapterArtifact(
+    epoch,
+    identity,
+    adapterContract
+  ) {
+    if (
+      !hasConcreteAdapterDelta(adapterContract) ||
+      !adapterContract.adapterArtifactSourcePath
+    ) {
+      return {
+        payloadArtifact: adapterContract.adapterArtifact || null,
+        artifactPath: null,
+      }
+    }
+
+    const sourcePath = String(
+      adapterContract.adapterArtifactSourcePath || ''
+    ).trim()
+
+    if (!sourcePath || !(await localAiStorage.exists(sourcePath))) {
+      throw new Error('Local adapter artifact file is unavailable')
+    }
+
+    const artifactSha256 = await localAiStorage.sha256File(sourcePath)
+
+    if (artifactSha256 !== adapterContract.adapterSha256) {
+      throw new Error('Local adapter artifact sha256 mismatch')
+    }
+
+    const sizeBytes = await localAiStorage.fileSize(sourcePath)
+    const artifactFileName = sanitizeArtifactFileName(
+      adapterContract.adapterArtifact && adapterContract.adapterArtifact.file
+        ? adapterContract.adapterArtifact.file
+        : path.basename(sourcePath),
+      `adapter-${adapterContract.adapterSha256}.bin`
+    )
+    const artifactPath = bundleArtifactPath(
+      localAiStorage,
+      epoch,
+      identity,
+      artifactFileName
+    )
+
+    await localAiStorage.copyFile(sourcePath, artifactPath)
+
+    return {
+      payloadArtifact: {
+        file: path.basename(artifactPath),
+        sizeBytes,
+      },
+      artifactPath,
+    }
+  }
+
+  async function importConcreteAdapterArtifact(
+    sourceBundlePath,
+    bundleId,
+    validation
+  ) {
+    if (
+      !hasConcreteAdapterDelta(validation.payload) ||
+      !validation.adapterArtifact
+    ) {
+      return null
+    }
+
+    const artifactFileName = sanitizeArtifactFileName(
+      validation.adapterArtifact.file,
+      `adapter-${validation.adapterSha256}.bin`
+    )
+    const sourceArtifactPath = path.join(
+      path.dirname(sourceBundlePath),
+      artifactFileName
+    )
+
+    if (!(await localAiStorage.exists(sourceArtifactPath))) {
+      throw new Error('Imported adapter artifact file is unavailable')
+    }
+
+    const artifactSha256 = await localAiStorage.sha256File(sourceArtifactPath)
+
+    if (artifactSha256 !== validation.adapterSha256) {
+      throw new Error('Imported adapter artifact sha256 mismatch')
+    }
+
+    const targetPath = receivedArtifactPath(
+      localAiStorage,
+      validation.epoch,
+      bundleId,
+      artifactFileName
+    )
+
+    await localAiStorage.copyFile(sourceArtifactPath, targetPath)
+
+    return targetPath
+  }
+
+  async function buildUpdateBundle(epochValue) {
+    const epoch = normalizeEpoch(epochValue)
+
+    if (epoch === null) {
+      throw new Error('Epoch is required')
+    }
+
+    const nextManifestPath = manifestPath(localAiStorage, epoch)
+
+    if (!(await localAiStorage.exists(nextManifestPath))) {
+      throw new Error(`Local AI manifest for epoch ${epoch} does not exist`)
+    }
+
+    const manifest = await localAiStorage.readJson(nextManifestPath)
+    const approvedPackage = await loadApprovedTrainingCandidatePackage(
+      localAiStorage,
+      epoch
+    )
+    assertApprovedPackageMatchesManifest(epoch, approvedPackage, manifest)
+    const eligibleFlipHashes = Array.isArray(manifest.eligibleFlipHashes)
+      ? manifest.eligibleFlipHashes.filter(Boolean)
+      : []
+    const excluded = Array.isArray(manifest.excluded) ? manifest.excluded : []
+    const modelReference = normalizeModelReference(localAiStorage, manifest)
+    const adapterContract = await resolveAdapterContract(
+      localAiStorage,
+      manifest,
+      modelReference
+    )
+
+    if (
+      !hasConcreteAdapterDelta(adapterContract) ||
+      !adapterContract.adapterArtifactSourcePath
+    ) {
+      throw new Error(
+        `Concrete adapter artifact for epoch ${epoch} is required before building a federated bundle`
+      )
+    }
+
+    const manifestSha256 = localAiStorage.sha256(JSON.stringify(manifest))
+    const generatedAt = new Date().toISOString()
+    const nonce = crypto.randomBytes(16).toString('hex')
+    const identityInfo = await resolveIdentity(getIdentity)
+    const governance = await resolveGovernance({
+      candidatePackage: approvedPackage,
+      manifest,
+      epoch,
+      identity: identityInfo.identity,
+      getGovernanceStatus,
+    })
+
+    if (!governance || !governance.eligible) {
+      throw new Error(
+        `Identity ${identityInfo.identity} is not eligible for federated governance in epoch ${epoch}`
+      )
+    }
+
+    const nextBundlePath = bundlePath(
+      localAiStorage,
+      epoch,
+      identityInfo.identity
+    )
+    const materializedArtifact = await materializeBundleAdapterArtifact(
+      epoch,
+      identityInfo.identity,
+      adapterContract
+    )
+    const payload = {
+      epoch,
+      identity: identityInfo.identity,
+      publicModelId: modelReference.publicModelId,
+      publicVisionId: modelReference.publicVisionId,
+      runtimeBackend: modelReference.runtimeBackend,
+      reasonerBackend: modelReference.reasonerBackend,
+      visionBackend: modelReference.visionBackend,
+      contractVersion: modelReference.contractVersion,
+      baseModelId: modelReference.baseModelId,
+      baseModelHash: modelReference.baseModelHash,
+      nonce,
+      eligibleFlipHashes,
+      manifest: {
+        file: path.basename(nextManifestPath),
+        sha256: manifestSha256,
+      },
+      deltaType: adapterContract.deltaType,
+      adapterFormat: adapterContract.adapterFormat,
+      adapterSha256: adapterContract.adapterSha256,
+      adapterArtifact: materializedArtifact.payloadArtifact,
+      trainingConfigHash: adapterContract.trainingConfigHash,
+      metrics: {
+        eligibleCount: eligibleFlipHashes.length,
+        excludedCount: excluded.length,
+      },
+      governance,
+      audit: buildAuditMetadata(localAiStorage, {
+        candidatePackage: approvedPackage,
+        manifest,
+        governance,
+      }),
+      generatedAt,
+    }
+    const signature = await signBundlePayload({
+      storage: localAiStorage,
+      payload,
+      identityInfo,
+      signPayload,
+    })
+    const bundle = {
+      version: UPDATE_BUNDLE_VERSION,
+      bundleType: 'local-ai-update',
+      payload,
+      signature,
+    }
+
+    await localAiStorage.writeJsonAtomic(nextBundlePath, bundle)
+
+    if (isDev && logger && typeof logger.debug === 'function') {
+      logger.debug('Local AI update bundle built', {
+        epoch,
+        identity: identityInfo.identity,
+        signed: signature.signed,
+        eligibleCount: eligibleFlipHashes.length,
+        bundlePath: nextBundlePath,
+        artifactPath: materializedArtifact.artifactPath,
+      })
+    }
+
+    return {
+      epoch,
+      identity: identityInfo.identity,
+      bundlePath: nextBundlePath,
+      artifactPath: materializedArtifact.artifactPath,
+      signed: signature.signed,
+      deltaType: payload.deltaType,
+      eligibleCount: eligibleFlipHashes.length,
+    }
+  }
+
+  async function importUpdateBundle(filePath) {
+    let sourcePath = null
+
+    try {
+      sourcePath = assertBundlePath(localAiStorage, filePath)
+    } catch {
+      const result = buildImportResult({
+        accepted: false,
+        reason: 'bundle_path_outside_incoming',
+      })
+
+      if (isDev) {
+        logImportResult(logger, result)
+      }
+
+      return result
+    }
+
+    if (!sourcePath) {
+      const result = buildImportResult({
+        accepted: false,
+        reason: 'file_path_required',
+      })
+
+      if (isDev) {
+        logImportResult(logger, result)
+      }
+
+      return result
+    }
+
+    if (!(await localAiStorage.exists(sourcePath))) {
+      const result = buildImportResult({
+        accepted: false,
+        reason: 'file_not_found',
+        bundlePath: sourcePath,
+      })
+
+      if (isDev) {
+        logImportResult(logger, result)
+      }
+
+      return result
+    }
+
+    let bundle
+
+    try {
+      bundle = await localAiStorage.readJson(sourcePath)
+    } catch (error) {
+      if (logger && typeof logger.error === 'function') {
+        logger.error('Unable to load Local AI update bundle', {
+          fileName: path.basename(sourcePath),
+          error: error.toString(),
+        })
+      }
+
+      const result = buildImportResult({
+        accepted: false,
+        reason: 'schema_invalid',
+        bundlePath: sourcePath,
+      })
+
+      if (isDev) {
+        logImportResult(logger, result)
+      }
+
+      return result
+    }
+
+    const validation = validateBundleShape(bundle)
+
+    if (!validation.ok) {
+      const result = buildImportResult({
+        accepted: false,
+        reason: validation.reason,
+        bundlePath: sourcePath,
+      })
+
+      if (isDev) {
+        logImportResult(logger, result)
+      }
+
+      return result
+    }
+
+    let bundleId = null
+
+    try {
+      const expectedBaseModel = await resolveModelReference(
+        localAiStorage,
+        getBaseModelReference
+      )
+
+      if (
+        validation.baseModelId !== expectedBaseModel.baseModelId ||
+        validation.baseModelHash !== expectedBaseModel.baseModelHash
+      ) {
+        const rejectionResult = buildImportResult({
+          accepted: false,
+          reason: 'base_model_mismatch',
+          identity: validation.identity,
+          epoch: validation.epoch,
+          sourceBundlePath: sourcePath,
+        })
+
+        if (isDev) {
+          logImportResult(logger, rejectionResult)
+        }
+
+        return rejectionResult
+      }
+
+      const signatureCheck = await verifyBundleSignature({
+        storage: localAiStorage,
+        payload: validation.payload,
+        signature: validation.signature,
+        identity: validation.identity,
+        verifySignature,
+      })
+
+      if (!signatureCheck.ok) {
+        const rejectionResult = buildImportResult({
+          accepted: false,
+          reason: signatureCheck.reason,
+          identity: validation.identity,
+          epoch: validation.epoch,
+          sourceBundlePath: sourcePath,
+        })
+
+        if (isDev) {
+          logImportResult(logger, rejectionResult)
+        }
+
+        return rejectionResult
+      }
+
+      if (!hasConcreteAdapterDelta(validation.payload)) {
+        const rejectionResult = buildImportResult({
+          accepted: false,
+          reason: 'concrete_adapter_required',
+          identity: validation.identity,
+          epoch: validation.epoch,
+          sourceBundlePath: sourcePath,
+        })
+
+        if (isDev) {
+          logImportResult(logger, rejectionResult)
+        }
+
+        return rejectionResult
+      }
+
+      if (!validation.adapterArtifact || !validation.adapterArtifact.file) {
+        const rejectionResult = buildImportResult({
+          accepted: false,
+          reason: 'adapter_artifact_required',
+          identity: validation.identity,
+          epoch: validation.epoch,
+          sourceBundlePath: sourcePath,
+        })
+
+        if (isDev) {
+          logImportResult(logger, rejectionResult)
+        }
+
+        return rejectionResult
+      }
+
+      bundleId = computeBundleId(localAiStorage, bundle)
+      const nextReceivedIndex = normalizeReceivedIndex(
+        await localAiStorage.readJson(
+          receivedIndexPath(localAiStorage),
+          defaultReceivedIndex()
+        )
+      )
+
+      if (
+        nextReceivedIndex.bundles.some(
+          (item) => item.nonce === validation.nonce
+        )
+      ) {
+        const rejectionResult = buildImportResult({
+          accepted: false,
+          reason: 'duplicate_nonce',
+          identity: validation.identity,
+          epoch: validation.epoch,
+          sourceBundlePath: sourcePath,
+          bundleId,
+        })
+
+        if (isDev) {
+          logImportResult(logger, rejectionResult)
+        }
+
+        return rejectionResult
+      }
+
+      if (
+        nextReceivedIndex.bundles.some(
+          (item) =>
+            item.epoch === validation.epoch &&
+            item.identity === validation.identity
+        )
+      ) {
+        const rejectionResult = buildImportResult({
+          accepted: false,
+          reason: 'duplicate_identity_epoch',
+          identity: validation.identity,
+          epoch: validation.epoch,
+          sourceBundlePath: sourcePath,
+          bundleId,
+        })
+
+        if (isDev) {
+          logImportResult(logger, rejectionResult)
+        }
+
+        return rejectionResult
+      }
+
+      if (
+        nextReceivedIndex.bundles.some((item) => item.bundleId === bundleId)
+      ) {
+        const rejectionResult = buildImportResult({
+          accepted: false,
+          reason: 'duplicate_bundle',
+          identity: validation.identity,
+          epoch: validation.epoch,
+          sourceBundlePath: sourcePath,
+          bundleId,
+        })
+
+        if (isDev) {
+          logImportResult(logger, rejectionResult)
+        }
+
+        return rejectionResult
+      }
+
+      const storedPath = receivedBundlePath(
+        localAiStorage,
+        validation.epoch,
+        bundleId
+      )
+      const artifactStoredPath = await importConcreteAdapterArtifact(
+        sourcePath,
+        bundleId,
+        validation
+      )
+      const importedAt = new Date().toISOString()
+
+      await localAiStorage.writeJsonAtomic(storedPath, bundle)
+      await localAiStorage.writeJsonAtomic(receivedIndexPath(localAiStorage), {
+        version: RECEIVED_INDEX_VERSION,
+        bundles: nextReceivedIndex.bundles.concat({
+          bundleId,
+          nonce: validation.nonce,
+          storedPath,
+          artifactStoredPath,
+          importedAt,
+          identity: validation.identity,
+          epoch: validation.epoch,
+          baseModelId: validation.baseModelId,
+          baseModelHash: validation.baseModelHash,
+          signatureType: validation.signature.type,
+          signed: signatureCheck.signed,
+        }),
+      })
+
+      const importResult = buildImportResult({
+        accepted: true,
+        reason: null,
+        identity: validation.identity,
+        epoch: validation.epoch,
+        sourceBundlePath: sourcePath,
+        storedPath,
+        artifactStoredPath,
+        bundleId,
+        signed: signatureCheck.signed,
+        signatureType: validation.signature.type,
+      })
+
+      if (isDev) {
+        logImportResult(logger, importResult)
+      }
+
+      return importResult
+    } catch (error) {
+      if (logger && typeof logger.error === 'function') {
+        logger.error('Local AI update bundle import failed', {
+          fileName: path.basename(sourcePath),
+          bundleId,
+          error: error.toString(),
+        })
+      }
+
+      const importResult = buildImportResult({
+        accepted: false,
+        reason: 'import_failed',
+        identity: validation.identity,
+        epoch: validation.epoch,
+        sourceBundlePath: sourcePath,
+        bundleId,
+      })
+
+      if (isDev) {
+        logImportResult(logger, importResult)
+      }
+
+      return importResult
+    }
+  }
+
+  async function aggregateAcceptedBundles() {
+    const expectedBaseModel = await resolveModelReference(
+      localAiStorage,
+      getBaseModelReference
+    )
+    const nextReceivedIndex = normalizeReceivedIndex(
+      await localAiStorage.readJson(
+        receivedIndexPath(localAiStorage),
+        defaultReceivedIndex()
+      )
+    )
+    const acceptedBundles = nextReceivedIndex.bundles
+    const compatibleBundles = []
+    const skipped = []
+
+    if (isDev) {
+      logAcceptedBundles(logger, acceptedBundles)
+    }
+
+    for (const entry of acceptedBundles) {
+      let bundle = null
+      let validation = null
+      let skipReason = null
+
+      if (
+        entry.baseModelId !== expectedBaseModel.baseModelId ||
+        entry.baseModelHash !== expectedBaseModel.baseModelHash
+      ) {
+        skipReason = 'base_model_mismatch'
+      } else if (!(await localAiStorage.exists(entry.storedPath))) {
+        skipReason = 'missing_bundle_file'
+      } else {
+        try {
+          bundle = await localAiStorage.readJson(entry.storedPath)
+        } catch {
+          skipReason = 'schema_invalid'
+        }
+      }
+
+      if (!skipReason) {
+        validation = validateBundleShape(bundle)
+
+        if (!validation.ok) {
+          skipReason = validation.reason
+        } else if (!validation.governance.eligible) {
+          skipReason = 'governance_ineligible'
+        } else if (computeBundleId(localAiStorage, bundle) !== entry.bundleId) {
+          skipReason = 'bundle_id_mismatch'
+        } else if (
+          validation.baseModelId !== expectedBaseModel.baseModelId ||
+          validation.baseModelHash !== expectedBaseModel.baseModelHash
+        ) {
+          skipReason = 'base_model_mismatch'
+        } else if (
+          hasConcreteAdapterDelta(validation.payload) &&
+          validation.adapterArtifact &&
+          (!entry.artifactStoredPath ||
+            !(await localAiStorage.exists(entry.artifactStoredPath)))
+        ) {
+          skipReason = 'missing_adapter_artifact'
+        }
+      }
+
+      if (skipReason) {
+        skipped.push({
+          bundleId: entry.bundleId,
+          reason: skipReason,
+        })
+      } else {
+        compatibleBundles.push({entry, validation})
+      }
+    }
+
+    if (isDev) {
+      logRejectedBundles(logger, skipped)
+    }
+
+    const bundlesWithUnsupportedDeltas = compatibleBundles.filter(
+      ({validation}) => {
+        const deltaType = String(validation.payload.deltaType || '')
+          .trim()
+          .toLowerCase()
+
+        return (
+          deltaType &&
+          deltaType !== 'none' &&
+          deltaType !== 'pending_adapter' &&
+          deltaType !== 'lora_adapter'
+        )
+      }
+    )
+    const bundlesWithPendingAdapters = compatibleBundles.filter(
+      ({validation}) => {
+        const deltaType = String(validation.payload.deltaType || '').trim()
+        return deltaType === 'pending_adapter'
+      }
+    )
+    const bundlesWithConcreteAdapters = compatibleBundles.filter(
+      ({validation}) => hasConcreteAdapterDelta(validation.payload)
+    )
+    const distinctIdentityCount = new Set(
+      compatibleBundles.map(({validation}) => validation.identity)
+    ).size
+    const corroborationGroups = buildCorroborationGroups(compatibleBundles)
+    const bestCorroborationDistinctIdentityCount = corroborationGroups.reduce(
+      (max, group) => Math.max(max, group.distinctIdentityCount),
+      0
+    )
+    let reason = 'no_real_model_deltas'
+    let deltaAvailability = 'none'
+    let mode = 'metadata_only_noop'
+
+    if (compatibleBundles.length < MIN_COMPATIBLE_BUNDLES) {
+      reason = 'insufficient_compatible_bundles'
+    } else if (distinctIdentityCount < MIN_DISTINCT_IDENTITIES) {
+      reason = 'insufficient_distinct_identities'
+    } else if (
+      bestCorroborationDistinctIdentityCount < MIN_DISTINCT_IDENTITIES
+    ) {
+      reason = 'insufficient_corroboration'
+    } else if (bundlesWithConcreteAdapters.length > 0) {
+      reason = 'adapter_merge_not_implemented'
+      deltaAvailability = 'available'
+      mode = 'adapter_merge_pending'
+    } else if (bundlesWithPendingAdapters.length > 0) {
+      reason = 'adapter_artifacts_pending'
+      deltaAvailability = 'pending'
+      mode = 'adapter_contract_pending'
+    } else if (bundlesWithUnsupportedDeltas.length > 0) {
+      reason = 'unsupported_delta_payload'
+      deltaAvailability = 'unsupported'
+    }
+
+    // MVP boundary: record compatibility and readiness only until real delta payloads exist.
+    const result = buildAggregationSummary({
+      baseModelId: expectedBaseModel.baseModelId,
+      baseModelHash: expectedBaseModel.baseModelHash,
+      compatibleBundles,
+      skipped,
+      distinctIdentityCount,
+      corroborationGroups,
+      deltaAvailability,
+      mode,
+      reason,
+    })
+    const outputPath = aggregationResultPath(localAiStorage)
+
+    await localAiStorage.writeJsonAtomic(outputPath, result)
+
+    if (isDev && logger && typeof logger.debug === 'function') {
+      logger.debug('Local AI aggregation completed', {
+        aggregated: result.aggregated,
+        mode: result.mode,
+        compatibleCount: result.compatibleCount,
+        skippedCount: result.skippedCount,
+        acceptedCount: result.acceptedCount,
+        rejectedCount: result.rejectedCount,
+        reason: result.reason,
+        outputPath,
+      })
+    }
+
+    return {
+      aggregated: result.aggregated,
+      mode: result.mode,
+      compatibleCount: result.compatibleCount,
+      distinctIdentityCount: result.distinctIdentityCount,
+      skippedCount: result.skippedCount,
+      acceptedCount: result.acceptedCount,
+      rejectedCount: result.rejectedCount,
+      outputPath,
+      baseModelId: result.baseModelId,
+    }
+  }
+
+  return {
+    aggregateAcceptedBundles,
+    buildUpdateBundle,
+    importUpdateBundle,
+  }
+}
+
+module.exports = {
+  DEFAULT_BASE_MODEL_ID,
+  PLACEHOLDER_IDENTITY,
+  PLACEHOLDER_SIGNATURE_REASON,
+  createLocalAiFederated,
+}

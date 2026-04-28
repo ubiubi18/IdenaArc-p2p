@@ -1,0 +1,894 @@
+/* eslint-disable react/prop-types */
+import React from 'react'
+import NextLink from 'next/link'
+import {
+  Badge,
+  Stack,
+  Text,
+  useDisclosure,
+  PopoverTrigger,
+  Box,
+  Heading,
+  Button,
+  Flex,
+  HStack,
+} from '@chakra-ui/react'
+import {useTranslation} from 'react-i18next'
+import {useRouter} from 'next/router'
+import {useIdentityState} from '../shared/providers/identity-context'
+import {useEpochState} from '../shared/providers/epoch-context'
+import {useSettingsState} from '../shared/providers/settings-context'
+import {
+  UserInlineCard,
+  UserStatList,
+  UserStatValue,
+  SpoilInviteDrawer,
+  SpoilInviteForm,
+  ActivateInviteForm,
+  UserStat,
+  UserStatLabel,
+  ActivateMiningForm,
+  KillIdentityDrawer,
+  KillForm,
+  ProfileTagList,
+  ReplenishStakeDrawer,
+  AnnotatedUserStat,
+} from '../screens/home/components'
+import {
+  PrimaryButton,
+  IconButton2,
+  SecondaryButton,
+} from '../shared/components/button'
+import Layout from '../shared/components/layout'
+import {
+  IconLink,
+  Dialog,
+  DialogBody,
+  DialogFooter,
+  DialogHeader,
+  ExternalLink,
+  Page,
+  TextLink,
+  Tooltip,
+  HDivider,
+} from '../shared/components/components'
+import {IdentityStatus, OnboardingStep} from '../shared/types'
+import {
+  toPercent,
+  toLocaleDna,
+  callRpc,
+  eitherState,
+  buildNextValidationCalendarLink,
+  formatValidationDate,
+} from '../shared/utils/utils'
+import {
+  buildValidationIdentityScope,
+  buildValidationSessionNodeScope,
+  shouldExpectValidationResults,
+} from '../screens/validation/utils'
+import {InviteProvider} from '../shared/providers/invite-context'
+import {useChainState} from '../shared/providers/chain-context'
+import {
+  OnboardingPopover,
+  OnboardingPopoverContent,
+  OnboardingPopoverContentIconRow,
+} from '../shared/components/onboarding'
+import {useOnboarding} from '../shared/providers/onboarding-context'
+import {onboardingShowingStep} from '../shared/utils/onboarding'
+import {createProfileDb} from '../screens/home/utils'
+import {ExportPrivateKeyDialog} from '../screens/settings/containers'
+import {useScroll} from '../shared/hooks/use-scroll'
+import {ValidationReportSummary} from '../screens/validation/report/components'
+import {useStakingApy} from '../screens/home/hooks'
+import {useFailToast, useSuccessToast} from '../shared/hooks/use-toast'
+import {
+  AddUserIcon,
+  AdsIcon,
+  ChatIcon,
+  ChevronRightIcon,
+  DeleteIcon,
+  GlobeIcon,
+  InfoIcon,
+  OracleIcon,
+  PhotoIcon,
+  PooIcon,
+  PrivateKeyIcon,
+  TelegramIcon,
+} from '../shared/components/icons'
+import {StakeProtectionBadge} from '../screens/home/stake-protection'
+
+export default function ProfilePage() {
+  const {
+    t,
+    i18n: {language},
+  } = useTranslation()
+
+  const router = useRouter()
+
+  const {
+    isOpen: isOpenKillForm,
+    onOpen: onOpenKillForm,
+    onClose: onCloseKillForm,
+  } = useDisclosure()
+
+  const {
+    isOpen: isOpenSpoilForm,
+    onOpen: onOpenSpoilForm,
+    onClose: onCloseSpoilForm,
+  } = useDisclosure()
+
+  const {syncing, offline} = useChainState()
+
+  const identity = useIdentityState()
+
+  const {
+    address,
+    state: status,
+    balance,
+    stake,
+    replenishedStake,
+    canInvite,
+    canTerminate,
+    canMine,
+    online,
+    delegatee,
+    delegationEpoch,
+    isValidated,
+    canActivateInvite,
+    pendingUndelegation,
+  } = identity
+
+  const epoch = useEpochState()
+  const settings = useSettingsState()
+
+  const {
+    isOpen: isOpenNextValidationDialog,
+    onOpen: onOpenNextValidationDialog,
+    onClose: onCloseNextValidationDialog,
+  } = useDisclosure()
+
+  const validationIdentityScope = React.useMemo(
+    () =>
+      buildValidationIdentityScope({
+        address,
+        nodeScope: buildValidationSessionNodeScope({
+          runInternalNode: settings.runInternalNode,
+          useExternalNode: settings.useExternalNode,
+          url: settings.url,
+          internalPort: settings.internalPort,
+        }),
+      }),
+    [
+      address,
+      settings.internalPort,
+      settings.runInternalNode,
+      settings.url,
+      settings.useExternalNode,
+    ]
+  )
+  const profileDb = React.useMemo(
+    () => createProfileDb(epoch, validationIdentityScope),
+    [epoch, validationIdentityScope]
+  )
+
+  const [showValidationResults, setShowValidationResults] = React.useState()
+
+  React.useEffect(() => {
+    const epochNumber = epoch?.epoch
+    if (
+      epoch &&
+      shouldExpectValidationResults(epochNumber, validationIdentityScope)
+    ) {
+      profileDb
+        .getDidShowValidationResults()
+        .then((seen) => {
+          setShowValidationResults(!seen)
+        })
+        .catch(() => {
+          setShowValidationResults(true)
+        })
+    }
+  }, [epoch, profileDb, validationIdentityScope])
+
+  React.useEffect(() => {
+    if (showValidationResults === false)
+      profileDb.putDidShowValidationResults(1)
+  }, [profileDb, showValidationResults])
+
+  React.useEffect(() => {
+    if (epoch && isValidated) {
+      profileDb
+        .getDidPlanNextValidation()
+        .then((didPlan) => {
+          if (!didPlan) onOpenNextValidationDialog()
+        })
+        .catch((error) => {
+          if (error?.notFound) onOpenNextValidationDialog()
+        })
+    }
+  }, [epoch, isValidated, onOpenNextValidationDialog, profileDb])
+
+  const [currentOnboarding, {dismissCurrentTask, next: nextOnboardingTask}] =
+    useOnboarding()
+
+  const eitherOnboardingState = (...states) =>
+    eitherState(currentOnboarding, ...states)
+
+  const toDna = toLocaleDna(language, {maximumFractionDigits: 4})
+
+  const maybeDna = (amount) =>
+    !amount || Number.isNaN(amount) ? '–' : toDna(amount)
+
+  const {
+    isOpen: isOpenExportPk,
+    onOpen: onOpenExportPk,
+    onClose: onCloseExportPk,
+  } = useDisclosure()
+
+  const {
+    isOpen: isOpenActivateInvitePopover,
+    onOpen: onOpenActivateInvitePopover,
+    onClose: onCloseActivateInvitePopover,
+  } = useDisclosure()
+
+  const activateInviteRef = React.useRef()
+
+  const {scrollTo: scrollToActivateInvite} = useScroll(activateInviteRef)
+
+  React.useEffect(() => {
+    if (
+      isOpenActivateInvitePopover ||
+      eitherState(
+        currentOnboarding,
+        onboardingShowingStep(OnboardingStep.ActivateInvite)
+      )
+    ) {
+      scrollToActivateInvite()
+      onOpenActivateInvitePopover()
+    } else onCloseActivateInvitePopover()
+  }, [
+    currentOnboarding,
+    isOpenActivateInvitePopover,
+    onCloseActivateInvitePopover,
+    onOpenActivateInvitePopover,
+    scrollToActivateInvite,
+  ])
+
+  const canSubmitFlip = [
+    IdentityStatus.Verified,
+    IdentityStatus.Human,
+    IdentityStatus.Newbie,
+  ].includes(status)
+
+  const showActivateMiningStatusIcon = canMine && !online && !delegatee
+  const showValidateIdentityIcon = !canMine && Number(stake) > 0
+
+  const lockedNewbieStake = (stake - (replenishedStake ?? 0)) * 0.75
+  const availableStake =
+    status === IdentityStatus.Newbie ? stake - lockedNewbieStake : stake
+
+  const replenishStakeDisclosure = useDisclosure()
+  const {
+    onOpen: onOpenReplenishStakeDisclosure,
+    onClose: onCloseReplenishStakeDisclosure,
+  } = replenishStakeDisclosure
+
+  React.useEffect(() => {
+    if (Object.keys(router.query).find((q) => q === 'replenishStake')) {
+      onOpenReplenishStakeDisclosure()
+      router.push('/home')
+    }
+  }, [onOpenReplenishStakeDisclosure, router])
+
+  const failToast = useFailToast()
+
+  const toast = useSuccessToast()
+
+  const stakingApy = useStakingApy()
+
+  return (
+    <>
+      <InviteProvider>
+        <Layout syncing={syncing} offline={offline}>
+          <Page>
+            <Stack spacing={5}>
+              <HomeFeaturedDestinations />
+              <Stack
+                direction={{base: 'column', xl: 'row'}}
+                spacing={6}
+                align="flex-start"
+              >
+                <Box flex={1} minW={0}>
+                  <Stack
+                    spacing={5}
+                    w={{base: 'full', xl: 'md'}}
+                    ref={activateInviteRef}
+                  >
+                    <UserInlineCard identity={identity} h={20}>
+                      <ProfileTagList />
+                    </UserInlineCard>
+
+                    {canActivateInvite && (
+                      <Box>
+                        <OnboardingPopover
+                          isOpen={isOpenActivateInvitePopover}
+                          placement="bottom"
+                        >
+                          <PopoverTrigger>
+                            <Stack
+                              spacing={6}
+                              bg="white"
+                              borderRadius="lg"
+                              boxShadow="0 3px 12px 0 rgba(83, 86, 92, 0.1), 0 2px 3px 0 rgba(83, 86, 92, 0.2)"
+                              px={10}
+                              py={8}
+                              pos="relative"
+                              zIndex="docked"
+                            >
+                              <Stack>
+                                <Heading as="h3" fontWeight={500} fontSize="lg">
+                                  {status === IdentityStatus.Invite
+                                    ? t('Congratulations!')
+                                    : t('Join the upcoming validation')}
+                                </Heading>
+                                <Text color="muted">
+                                  {status === IdentityStatus.Invite
+                                    ? t(
+                                        'You have been invited to join the upcoming validation ceremony. Click the button below to accept the invitation.'
+                                      )
+                                    : t(
+                                        'To take part in the validation, you need an invitation code. Invitations can be provided by validated identities.'
+                                      )}
+                                </Text>
+                              </Stack>
+                              <Box>
+                                <ActivateInviteForm
+                                  onHowToGetInvitation={
+                                    onOpenActivateInvitePopover
+                                  }
+                                />
+                              </Box>
+                            </Stack>
+                          </PopoverTrigger>
+                          <OnboardingPopoverContent
+                            gutter={10}
+                            title={
+                              status === IdentityStatus.Invite
+                                ? t('Accept invitation')
+                                : t('How to get an invitation code')
+                            }
+                            zIndex={2}
+                            onDismiss={() => {
+                              dismissCurrentTask()
+                              onCloseActivateInvitePopover()
+                            }}
+                          >
+                            <Stack spacing={5}>
+                              {status === IdentityStatus.Invite ? (
+                                <Box>
+                                  {t(
+                                    'You are invited to join the upcoming validation. Please accept the invitation.'
+                                  )}
+                                </Box>
+                              ) : (
+                                <Stack>
+                                  <Text>
+                                    {t(`Join the official Idena public Telegram group and follow instructions in the
+                pinned message.`)}
+                                  </Text>
+                                  <OnboardingPopoverContentIconRow
+                                    icon={TelegramIcon}
+                                  >
+                                    <Box>
+                                      <PrimaryButton
+                                        variant="unstyled"
+                                        p={0}
+                                        py={0}
+                                        h={18}
+                                        onClick={() => {
+                                          global.openExternal(
+                                            'https://t.me/IdenaNetworkPublic'
+                                          )
+                                        }}
+                                      >
+                                        https://t.me/IdenaNetworkPublic
+                                      </PrimaryButton>
+                                      <Text
+                                        fontSize="sm"
+                                        color="rgba(255, 255, 255, 0.56)"
+                                      >
+                                        {t('Official group')}
+                                      </Text>
+                                    </Box>
+                                  </OnboardingPopoverContentIconRow>
+                                </Stack>
+                              )}
+                            </Stack>
+                          </OnboardingPopoverContent>
+                        </OnboardingPopover>
+                      </Box>
+                    )}
+
+                    {showValidationResults && (
+                      <Box>
+                        <ValidationReportSummary
+                          onClose={() => setShowValidationResults(false)}
+                        />
+                      </Box>
+                    )}
+
+                    <UserStatList title={t('My Wallet')}>
+                      <UserStat>
+                        <UserStatLabel>{t('Address')}</UserStatLabel>
+                        <UserStatValue>
+                          {address}
+                          <ExternalLink
+                            href={`https://scan.idena.io/address/${address}`}
+                          >
+                            {t('Open in blockchain explorer')}
+                          </ExternalLink>
+                        </UserStatValue>
+                      </UserStat>
+
+                      <UserStat>
+                        <UserStatLabel>{t('Balance')}</UserStatLabel>
+                        <UserStatValue>
+                          {maybeDna(balance)}
+                          <TextLink href="/wallets">
+                            <Stack
+                              isInline
+                              spacing={0}
+                              align="center"
+                              fontWeight={500}
+                            >
+                              <Text as="span">{t('Send')}</Text>
+                              <ChevronRightIcon boxSize={4} />
+                            </Stack>
+                          </TextLink>
+                        </UserStatValue>
+                      </UserStat>
+                    </UserStatList>
+
+                    {Boolean(status) && status !== IdentityStatus.Undefined && (
+                      <UserStatList title={t('Stake')}>
+                        <Stack spacing="6">
+                          <Stack direction="row" spacing="2">
+                            <Stack spacing="4" flex={1}>
+                              <UserStat>
+                                <Stack spacing="1">
+                                  <UserStatLabel fontWeight={500}>
+                                    {t('Amount')}
+                                  </UserStatLabel>
+                                  <UserStatValue>
+                                    {toDna(availableStake)}
+                                  </UserStatValue>
+                                </Stack>
+                              </UserStat>
+                              {stake > 0 &&
+                                status === IdentityStatus.Newbie && (
+                                  <AnnotatedUserStat
+                                    label={t('Locked')}
+                                    value={toDna(lockedNewbieStake)}
+                                    tooltip={t(
+                                      'You need to get Verified status to get the locked funds into the normal wallet'
+                                    )}
+                                  />
+                                )}
+                            </Stack>
+                            <UserStat flex={1}>
+                              <Stack spacing="1">
+                                <UserStatLabel fontWeight={500}>
+                                  {t('APY')}
+                                </UserStatLabel>
+                                <UserStatValue>
+                                  <Stack direction="row" spacing="2">
+                                    <Text as="span">
+                                      {stakingApy > 0
+                                        ? toPercent(stakingApy)
+                                        : '--'}
+                                      {(showActivateMiningStatusIcon ||
+                                        showValidateIdentityIcon) && (
+                                        <Tooltip
+                                          shouldWrapChildren
+                                          placement="top"
+                                          hasArrow
+                                          label={
+                                            showActivateMiningStatusIcon
+                                              ? t(
+                                                  'Please activate your mining status to earn the staking rewards'
+                                                )
+                                              : t(
+                                                  'Please validate your account to earn the staking rewards'
+                                                )
+                                          }
+                                          w="130px"
+                                        >
+                                          <InfoIcon
+                                            boxSize="4"
+                                            color="red.500"
+                                            mt="-0.5"
+                                            ml="1"
+                                          />
+                                        </Tooltip>
+                                      )}
+                                    </Text>
+                                    <ExternalLink
+                                      href={`https://idena.io/staking?amount=${Math.floor(
+                                        availableStake
+                                      )}`}
+                                      alignSelf="center"
+                                    >
+                                      {t('Calculator')}
+                                    </ExternalLink>
+                                  </Stack>
+                                </UserStatValue>
+                              </Stack>
+                            </UserStat>
+                          </Stack>
+
+                          {Number(stake) > 0 && (
+                            <Stack direction="row" spacing="2">
+                              <StakeProtectionBadge type="miss" />
+                              <StakeProtectionBadge type="fail" />
+                            </Stack>
+                          )}
+
+                          <HDivider />
+
+                          <Flex justify="flex-end">
+                            <Button
+                              variant="outline"
+                              onClick={replenishStakeDisclosure.onOpen}
+                            >
+                              Add stake
+                            </Button>
+                          </Flex>
+                        </Stack>
+                      </UserStatList>
+                    )}
+                  </Stack>
+                </Box>
+
+                <Stack spacing={5} w={{base: 'full', xl: 220}} flexShrink={0}>
+                  <Box minH={0} mt={0} w="full">
+                    <OnboardingPopover
+                      isOpen={eitherOnboardingState(
+                        onboardingShowingStep(OnboardingStep.ActivateMining)
+                      )}
+                    >
+                      <PopoverTrigger>
+                        <Box
+                          bg="white"
+                          position={
+                            eitherOnboardingState(
+                              onboardingShowingStep(
+                                OnboardingStep.ActivateMining
+                              )
+                            )
+                              ? 'relative'
+                              : 'initial'
+                          }
+                          borderRadius="md"
+                          p={2}
+                          m={-2}
+                          zIndex={2}
+                        >
+                          {address && canMine && (
+                            <ActivateMiningForm
+                              isOnline={online}
+                              delegatee={delegatee}
+                              delegationEpoch={delegationEpoch}
+                              pendingUndelegation={pendingUndelegation}
+                              onShow={nextOnboardingTask}
+                            />
+                          )}
+                        </Box>
+                      </PopoverTrigger>
+                      <OnboardingPopoverContent
+                        title={t('Activate mining status')}
+                        onDismiss={nextOnboardingTask}
+                      >
+                        <Text>
+                          {t(
+                            `To become a validator of Idena blockchain you can activate your mining status. Keep your node online to mine iDNA coins.`
+                          )}
+                        </Text>
+                      </OnboardingPopoverContent>
+                    </OnboardingPopover>
+                  </Box>
+                  <Stack spacing={1} align="stretch" w="full">
+                    <IconLink
+                      href="/oracles/new"
+                      icon={<OracleIcon boxSize={5} />}
+                      maxW="full"
+                    >
+                      {t('New voting')}
+                    </IconLink>
+                    <IconLink
+                      href="/adn/new"
+                      icon={<AdsIcon boxSize="5" />}
+                      maxW="full"
+                    >
+                      {t('New ad')}
+                    </IconLink>
+                    <IconLink
+                      href="/flips/new"
+                      icon={<PhotoIcon boxSize={5} />}
+                      isDisabled={!canSubmitFlip}
+                      maxW="full"
+                    >
+                      {t('New flip')}
+                    </IconLink>
+                    <IconLink
+                      href="/contacts?new"
+                      isDisabled={!canInvite}
+                      maxW="full"
+                      icon={<AddUserIcon boxSize={5} />}
+                    >
+                      {t('Invite')}
+                    </IconLink>
+                    <IconButton2
+                      icon={<PooIcon />}
+                      maxW="full"
+                      onClick={onOpenSpoilForm}
+                    >
+                      {t('Spoil invite')}
+                    </IconButton2>
+                    <IconButton2
+                      icon={<PrivateKeyIcon />}
+                      maxW="full"
+                      onClick={onOpenExportPk}
+                    >
+                      {t('Backup private key')}
+                    </IconButton2>
+                    <IconButton2
+                      isDisabled={!canTerminate}
+                      icon={<DeleteIcon />}
+                      maxW="full"
+                      onClick={onOpenKillForm}
+                    >
+                      {t('Terminate')}
+                    </IconButton2>
+                  </Stack>
+                </Stack>
+              </Stack>
+            </Stack>
+
+            <KillIdentityDrawer
+              address={address}
+              isOpen={isOpenKillForm}
+              onClose={onCloseKillForm}
+            >
+              <KillForm onSuccess={onCloseKillForm} onFail={onCloseKillForm} />
+            </KillIdentityDrawer>
+
+            <SpoilInviteDrawer
+              isOpen={isOpenSpoilForm}
+              onClose={onCloseSpoilForm}
+            >
+              <SpoilInviteForm
+                onSpoil={async (key) => {
+                  try {
+                    await callRpc('dna_activateInviteToRandAddr', {key})
+                    toast(t('Invitation is successfully spoiled'))
+                    onCloseSpoilForm()
+                  } catch {
+                    failToast(t('Invitation is missing'))
+                  }
+                }}
+              />
+            </SpoilInviteDrawer>
+
+            <ReplenishStakeDrawer
+              {...replenishStakeDisclosure}
+              onMined={onCloseReplenishStakeDisclosure}
+              onError={failToast}
+            />
+          </Page>
+        </Layout>
+      </InviteProvider>
+
+      <Dialog
+        isOpen={isOpenNextValidationDialog}
+        onClose={onCloseNextValidationDialog}
+      >
+        <DialogHeader>
+          {isValidated
+            ? t('Congratulations! You have been successfully validated!')
+            : t('Your status is not validated')}
+        </DialogHeader>
+        <DialogBody>
+          <Stack spacing={1}>
+            <Text>
+              {isValidated
+                ? t(
+                    `Your status is valid till the next validation: {{nextValidation}}.`,
+                    {
+                      nextValidation:
+                        epoch &&
+                        formatValidationDate(epoch.nextValidation, language),
+                      nsSeparator: '!!',
+                    }
+                  )
+                : t(
+                    'Please join the next validation ceremony: {{nextValidation}}.',
+                    {
+                      nextValidation:
+                        epoch &&
+                        formatValidationDate(epoch.nextValidation, language),
+                      nsSeparator: '!!',
+                    }
+                  )}
+            </Text>
+            <Text>
+              {t(
+                `Add this event to your personal calendar so that you don't miss the next validation.`
+              )}
+            </Text>
+          </Stack>
+        </DialogBody>
+        <DialogFooter>
+          <SecondaryButton
+            onClick={() => {
+              profileDb
+                .putDidPlanNextValidation(1)
+                .finally(onCloseNextValidationDialog)
+            }}
+          >
+            {t('Cancel')}
+          </SecondaryButton>
+          <PrimaryButton
+            onClick={() => {
+              global.openExternal(
+                buildNextValidationCalendarLink(epoch?.nextValidation)
+              )
+              profileDb
+                .putDidPlanNextValidation(1)
+                .finally(onCloseNextValidationDialog)
+            }}
+          >
+            {t('Add to calendar')}
+          </PrimaryButton>
+        </DialogFooter>
+      </Dialog>
+
+      <ExportPrivateKeyDialog
+        isOpen={isOpenExportPk}
+        onClose={onCloseExportPk}
+      />
+    </>
+  )
+}
+
+function HomeFeaturedDestinations() {
+  const {t} = useTranslation()
+
+  return (
+    <Box
+      bg="white"
+      borderRadius="xl"
+      boxShadow="0 2px 8px 0 rgba(83, 86, 92, 0.08), 0 1px 2px 0 rgba(83, 86, 92, 0.12)"
+      px={4}
+      py={2}
+      w="full"
+    >
+      <Stack spacing={2}>
+        <Stack
+          direction={{base: 'column', xl: 'row'}}
+          align="stretch"
+          spacing={2}
+        >
+          <HomeFeaturedCard
+            href="/ai-chat"
+            icon={<ChatIcon boxSize={5} />}
+            title={t('IdenaAI')}
+            cta={t('Start chat')}
+            stamp={t('AI')}
+            stampColorScheme="blue"
+          />
+          <HomeFeaturedCard
+            href="/social"
+            icon={<GlobeIcon boxSize={5} />}
+            title={t('idena.social')}
+            cta={t('Open social')}
+            stamp={t('Live')}
+            stampColorScheme="green"
+          />
+        </Stack>
+      </Stack>
+    </Box>
+  )
+}
+
+function HomeFeaturedCard({
+  href,
+  icon,
+  title,
+  context,
+  cta,
+  stamp,
+  stampColorScheme = 'purple',
+}) {
+  return (
+    <NextLink href={href} passHref>
+      <Box
+        as="a"
+        display="block"
+        borderWidth="1px"
+        borderColor="gray.100"
+        borderRadius="lg"
+        px={3}
+        py={2}
+        flex={1}
+        bg="gray.50"
+        cursor="pointer"
+        transition="all 0.15s ease"
+        _hover={{
+          borderColor: 'blue.100',
+          bg: 'white',
+          boxShadow: '0 6px 18px 0 rgba(76, 124, 240, 0.08)',
+        }}
+        _focusVisible={{
+          outline: 'none',
+          borderColor: 'blue.300',
+          boxShadow: '0 0 0 3px rgba(76, 124, 240, 0.18)',
+        }}
+      >
+        <HStack spacing={3} justify="space-between" align="center" minW={0}>
+          <HStack spacing={3} align="center" minW={0}>
+            <Flex
+              align="center"
+              justify="center"
+              boxSize={9}
+              borderRadius="lg"
+              bg="white"
+              color="brandBlue.500"
+              flexShrink={0}
+              boxShadow="inset 0 0 0 1px rgba(76, 124, 240, 0.08)"
+            >
+              {icon}
+            </Flex>
+            <Stack spacing={1} minW={0}>
+              <HStack spacing={2} align="center">
+                <Heading as="h3" fontSize="md" fontWeight={600}>
+                  {title}
+                </Heading>
+                {stamp ? (
+                  <Badge
+                    colorScheme={stampColorScheme}
+                    borderRadius="full"
+                    px={2}
+                    py="0.5"
+                    fontSize="2xs"
+                    textTransform="uppercase"
+                  >
+                    {stamp}
+                  </Badge>
+                ) : null}
+              </HStack>
+              {context ? (
+                <Text color="muted" fontSize="xs" lineHeight="base">
+                  {context}
+                </Text>
+              ) : null}
+            </Stack>
+          </HStack>
+          <HStack
+            spacing={2}
+            align="center"
+            color="brandBlue.500"
+            flexShrink={0}
+            borderRadius="md"
+            px={2}
+            py={1.5}
+          >
+            {icon}
+            <Text as="span" fontWeight={500}>
+              {cta}
+            </Text>
+          </HStack>
+        </HStack>
+      </Box>
+    </NextLink>
+  )
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena-arc.local/protocol/idena-arc-session.schema.json",
+  "title": "IdenaArc Session Manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["protocol", "sessionId", "manifest", "participants"],
+  "properties": {
+    "protocol": {"const": "idena-arc-session-v0"},
+    "sessionId": {"type": "string", "minLength": 1},
+    "manifest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["generator", "sessionNonce", "startTime", "endTime"],
+      "properties": {
+        "generator": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["cid", "hash", "version"],
+          "properties": {
+            "cid": {"type": "string", "minLength": 1},
+            "hash": {"$ref": "#/$defs/sha256Prefixed"},
+            "version": {"type": "string", "minLength": 1}
+          }
+        },
+        "rehearsalEpochOrRound": {},
+        "networkEntropy": {},
+        "sessionNonce": {"type": "string", "minLength": 1},
+        "startTime": {"type": "string", "format": "date-time"},
+        "endTime": {"type": "string", "format": "date-time"},
+        "submissionCutoff": {"type": "string", "format": "date-time"}
+      }
+    },
+    "participants": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["participantId"],
+        "properties": {
+          "participantId": {"type": "string", "minLength": 1},
+          "address": {"type": ["string", "null"]},
+          "commitment": {"$ref": "#/$defs/sha256Prefixed"},
+          "revealedSaltHash": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "finalSeed": {
+      "type": ["object", "null"],
+      "properties": {
+        "finalSeed": {"$ref": "#/$defs/sha256"},
+        "finalSeedHash": {"$ref": "#/$defs/sha256Prefixed"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "sha256Prefixed": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

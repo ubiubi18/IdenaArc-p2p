@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena-arc.local/protocol/idena-arc-trace-bundle.schema.json",
+  "title": "IdenaArc Trace Bundle",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["protocol", "resultId", "verified", "result", "trace"],
+  "properties": {
+    "protocol": {"const": "idena-arc-trace-bundle-v0"},
+    "resultId": {"type": "string", "minLength": 1},
+    "verified": {"type": "boolean"},
+    "replayVerified": {"type": "boolean"},
+    "signatureValid": {"type": "boolean"},
+    "anchorValid": {"type": "boolean"},
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "protocol",
+        "sessionId",
+        "playerAddress",
+        "generatorHash",
+        "finalSeedHash",
+        "score",
+        "traceHash",
+        "signature",
+        "identityProof"
+      ],
+      "properties": {
+        "protocol": {"const": "idena-arc-result-v0"},
+        "sessionId": {"type": "string", "minLength": 1},
+        "playerAddress": {"type": "string", "pattern": "^0x[a-fA-F0-9]{40}$"},
+        "generatorHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "finalSeedHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "score": {"type": "integer", "minimum": 0},
+        "traceHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "signature": {"$ref": "#/$defs/identitySignature"},
+        "identityProof": {"$ref": "#/$defs/identityProof"}
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "protocol",
+        "sessionId",
+        "actions",
+        "finalStateHash",
+        "score"
+      ],
+      "properties": {
+        "protocol": {"const": "idena-arc-trace-v0"},
+        "sessionId": {"type": "string", "minLength": 1},
+        "initialStateHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["t_ms", "action"],
+            "properties": {
+              "t_ms": {"type": "integer", "minimum": 0},
+              "action": {"type": "string", "minLength": 1},
+              "observation_hash": {"$ref": "#/$defs/sha256Prefixed"}
+            }
+          }
+        },
+        "finalStateHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "score": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "sha256Prefixed": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "keccak256Prefixed": {
+      "type": "string",
+      "pattern": "^keccak256:[a-f0-9]{64}$"
+    },
+    "identitySignature": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["type", "address", "publicKey", "messageHash", "value"],
+          "properties": {
+            "type": {"const": "idena-arc-secp256k1-v0"},
+            "address": {"type": "string"},
+            "publicKey": {"type": "string"},
+            "messageHash": {"$ref": "#/$defs/sha256Prefixed"},
+            "value": {"type": "string"}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "address", "format", "messageHash", "value"],
+          "properties": {
+            "type": {"const": "idena-node-dna-sign-v0"},
+            "address": {"type": "string"},
+            "format": {"enum": ["prefix", "doubleHash"]},
+            "message": {"type": "string"},
+            "messageHash": {"$ref": "#/$defs/keccak256Prefixed"},
+            "value": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "identityProof": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "status", "mode"],
+          "properties": {
+            "type": {
+              "enum": [
+                "idena-arc-signature-proof-v0",
+                "idena-node-signature-proof-v0"
+              ]
+            },
+            "status": {"const": "verified"},
+            "mode": {"type": "string"}
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "status",
+            "expectedAddress",
+            "payloadHash",
+            "resultPayloadHash"
+          ],
+          "properties": {
+            "type": {"const": "idena-arc-tx-anchor-v0"},
+            "status": {"enum": ["draft", "submitted-reference"]},
+            "expectedAddress": {"type": "string"},
+            "payloadHash": {"$ref": "#/$defs/sha256Prefixed"},
+            "resultPayloadHash": {"$ref": "#/$defs/sha256Prefixed"},
+            "txHash": {"type": ["string", "null"]},
+            "cid": {"type": ["string", "null"]},
+            "contract": {"type": ["string", "null"]},
+            "instructions": {"type": "object"}
+          }
+        }
+      ]
+    }
+  }
+}

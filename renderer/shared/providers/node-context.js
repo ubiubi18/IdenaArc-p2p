@@ -1,0 +1,329 @@
+import React, {useCallback, useEffect, useMemo} from 'react'
+import {useSettingsState} from './settings-context'
+import useLogger from '../hooks/use-logger'
+import {getNodeBridge} from '../utils/node-bridge'
+import {
+  NODE_STARTUP_PHASE,
+  reduceNodeStartupPhase,
+} from '../utils/node-startup-status'
+
+const NODE_READY = 'NODE_READY'
+const NODE_FAILED = 'NODE_FAILED'
+const NODE_START = 'NODE_START'
+const NODE_STOP = 'NODE_STOP'
+const NODE_REINIT = 'NODE_REINIT'
+const NODE_LOG = 'NODE_LOG'
+const UNSUPPORTED_MACOS_VERSION = 'UNSUPPORTED_MACOS_VERSION'
+
+const TROUBLESHOOTING_RESTART_NODE = 'TROUBLESHOOTING_RESTART_NODE'
+const TROUBLESHOOTING_UPDATE_NODE = 'TROUBLESHOOTING_UPDATE_NODE'
+const TROUBLESHOOTING_RESET_NODE = 'TROUBLESHOOTING_RESET_NODE'
+
+const initialState = {
+  nodeStarted: false,
+  nodeReady: false,
+  nodeFailed: false,
+  runningTroubleshooter: false,
+  logs: [],
+  nodeVersion: null,
+  nodeSessionKey: 0,
+  nodeStartupPhase: NODE_STARTUP_PHASE.IDLE,
+}
+
+function nodeReducer(state, action) {
+  switch (action.type) {
+    case NODE_FAILED: {
+      return {
+        ...state,
+        nodeFailed: true,
+        nodeReady: false,
+        nodeStarted: false,
+      }
+    }
+    case NODE_READY: {
+      const nodeVersion =
+        typeof action.data === 'string' && action.data.trim()
+          ? action.data.trim()
+          : state.nodeVersion
+      return {
+        ...state,
+        nodeReady: true,
+        nodeVersion,
+      }
+    }
+    case NODE_START: {
+      return {
+        ...state,
+        nodeStarted: true,
+        runningTroubleshooter: false,
+        nodeSessionKey: state.nodeSessionKey + 1,
+        nodeStartupPhase: NODE_STARTUP_PHASE.STARTING,
+      }
+    }
+    case NODE_STOP: {
+      return {
+        ...state,
+        nodeStarted: false,
+        nodeStartupPhase: NODE_STARTUP_PHASE.IDLE,
+      }
+    }
+    case NODE_REINIT: {
+      return {
+        ...state,
+        nodeReady: false,
+        nodeFailed: false,
+        nodeStartupPhase: NODE_STARTUP_PHASE.IDLE,
+      }
+    }
+    case NODE_LOG: {
+      return {
+        ...state,
+        nodeStartupPhase: reduceNodeStartupPhase(
+          action.data,
+          state.nodeStartupPhase
+        ),
+      }
+    }
+    case UNSUPPORTED_MACOS_VERSION: {
+      return {
+        ...state,
+        unsupportedMacosVersion: true,
+      }
+    }
+    case TROUBLESHOOTING_RESTART_NODE:
+    case TROUBLESHOOTING_UPDATE_NODE:
+    case TROUBLESHOOTING_RESET_NODE: {
+      return {
+        ...state,
+        nodeFailed: false,
+        runningTroubleshooter: true,
+      }
+    }
+
+    default:
+      throw new Error(`Unknown action ${action.type}`)
+  }
+}
+
+const NodeStateContext = React.createContext()
+const NodeDispatchContext = React.createContext()
+
+function hasNodeBridge() {
+  return !getNodeBridge().__idenaFallback
+}
+
+export function shouldRunBuiltInNode(settings = {}) {
+  const persistentExternalNode =
+    settings.useExternalNode === true &&
+    settings.externalNodeMode !== 'ephemeral'
+
+  return settings.runInternalNode === true && !persistentExternalNode
+}
+
+// eslint-disable-next-line react/prop-types
+export function NodeProvider({children}) {
+  const settings = useSettingsState()
+  const initRequestedRef = React.useRef(false)
+  const startRequestedRef = React.useRef(false)
+  const runBuiltInNode = shouldRunBuiltInNode(settings)
+
+  const [state, dispatch] = useLogger(
+    React.useReducer(nodeReducer, initialState)
+  )
+
+  useEffect(() => {
+    if (!hasNodeBridge()) {
+      return undefined
+    }
+
+    const onEvent = (event, data) => {
+      switch (event) {
+        case 'node-failed':
+          initRequestedRef.current = false
+          startRequestedRef.current = false
+          dispatch({type: NODE_FAILED})
+          break
+        case 'node-started':
+          startRequestedRef.current = false
+          dispatch({type: NODE_START})
+          break
+        case 'node-stopped':
+          initRequestedRef.current = false
+          startRequestedRef.current = false
+          dispatch({type: NODE_STOP})
+          break
+        case 'node-ready':
+          initRequestedRef.current = false
+          dispatch({type: NODE_READY, data})
+          break
+        case 'node-log':
+          dispatch({type: NODE_LOG, data})
+          break
+        case 'restart-node':
+        case 'state-cleaned':
+          initRequestedRef.current = false
+          startRequestedRef.current = false
+          dispatch({type: NODE_REINIT, data})
+          break
+        case 'unsupported-macos-version':
+          dispatch({type: UNSUPPORTED_MACOS_VERSION})
+          break
+
+        case 'troubleshooting-restart-node': {
+          dispatch({type: TROUBLESHOOTING_RESTART_NODE})
+          return getNodeBridge().startLocalNode({
+            rpcPort: settings.internalPort,
+            tcpPort: settings.tcpPort,
+            ipfsPort: settings.ipfsPort,
+            autoActivateMining: settings.autoActivateMining,
+          })
+        }
+        case 'troubleshooting-update-node': {
+          return dispatch({type: TROUBLESHOOTING_UPDATE_NODE})
+        }
+        case 'troubleshooting-reset-node': {
+          dispatch({type: TROUBLESHOOTING_RESET_NODE})
+          return getNodeBridge().initLocalNode()
+        }
+
+        default:
+          break
+      }
+    }
+
+    return getNodeBridge().onEvent(onEvent)
+  }, [
+    dispatch,
+    settings.autoActivateMining,
+    settings.internalPort,
+    settings.ipfsPort,
+    settings.tcpPort,
+  ])
+
+  useEffect(() => {
+    initRequestedRef.current = false
+    startRequestedRef.current = false
+    dispatch({type: NODE_REINIT})
+  }, [runBuiltInNode, dispatch])
+
+  useEffect(() => {
+    if (!hasNodeBridge()) {
+      return
+    }
+
+    if (
+      state.nodeReady &&
+      !state.nodeFailed &&
+      !state.nodeStarted &&
+      runBuiltInNode &&
+      !startRequestedRef.current
+    ) {
+      startRequestedRef.current = true
+      try {
+        getNodeBridge().startLocalNode({
+          rpcPort: settings.internalPort,
+          tcpPort: settings.tcpPort,
+          ipfsPort: settings.ipfsPort,
+          autoActivateMining: settings.autoActivateMining,
+        })
+      } catch {
+        startRequestedRef.current = false
+        dispatch({type: NODE_FAILED})
+      }
+    }
+  }, [
+    settings.internalPort,
+    state.nodeReady,
+    state.nodeStarted,
+    runBuiltInNode,
+    settings.tcpPort,
+    settings.ipfsPort,
+    state.nodeFailed,
+    settings.autoActivateMining,
+    dispatch,
+  ])
+
+  useEffect(() => {
+    if (!hasNodeBridge()) {
+      return
+    }
+
+    if (state.nodeReady || state.nodeFailed || state.runningTroubleshooter) {
+      return
+    }
+
+    if (runBuiltInNode) {
+      if (!state.nodeStarted && !initRequestedRef.current) {
+        initRequestedRef.current = true
+        try {
+          getNodeBridge().initLocalNode()
+        } catch {
+          initRequestedRef.current = false
+          dispatch({type: NODE_FAILED})
+        }
+      }
+    } else if (state.nodeStarted) {
+      initRequestedRef.current = false
+      startRequestedRef.current = false
+      getNodeBridge().stopLocalNode()
+    }
+  }, [
+    runBuiltInNode,
+    state.nodeStarted,
+    state.nodeReady,
+    state.nodeFailed,
+    state.runningTroubleshooter,
+    dispatch,
+  ])
+
+  const tryRestartNode = useCallback(() => {
+    initRequestedRef.current = false
+    startRequestedRef.current = false
+    dispatch({type: NODE_REINIT})
+  }, [dispatch])
+
+  const importNodeKey = useCallback((shouldResetNode) => {
+    if (!hasNodeBridge()) {
+      return
+    }
+
+    if (shouldResetNode) {
+      getNodeBridge().cleanState()
+    } else {
+      getNodeBridge().restartNode()
+    }
+  }, [])
+
+  return (
+    <NodeStateContext.Provider value={state}>
+      <NodeDispatchContext.Provider
+        value={useMemo(
+          () => ({tryRestartNode, importNodeKey}),
+          [importNodeKey, tryRestartNode]
+        )}
+      >
+        {children}
+      </NodeDispatchContext.Provider>
+    </NodeStateContext.Provider>
+  )
+}
+
+export function useNodeState() {
+  const context = React.useContext(NodeStateContext)
+  if (context === undefined) {
+    throw new Error('useNodeState must be used within a NodeStateProvider')
+  }
+  return context
+}
+
+export function useNodeDispatch() {
+  const context = React.useContext(NodeDispatchContext)
+  if (context === undefined) {
+    throw new Error('useNodeState must be used within a NodeDispatchProvider')
+  }
+  return context
+}
+
+export function useNode() {
+  return [useNodeState(), useNodeDispatch()]
+}

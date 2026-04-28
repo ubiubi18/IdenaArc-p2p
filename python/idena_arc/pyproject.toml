@@ -1,0 +1,10 @@
+[project]
+name = "idena-arc-sidecar"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "arcengine>=0.1.4",
+]
+
+[tool.idena-arc]
+fallback-engine = "arcengine-compatible-local-grid-v0"

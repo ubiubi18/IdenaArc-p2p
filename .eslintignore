@@ -1,0 +1,7 @@
+renderer/.next
+renderer/out
+**/dist
+vendor
+renderer/public/idena-social
+**/shared/models/proto/**
+test/e2e
