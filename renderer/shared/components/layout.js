@@ -31,8 +31,10 @@ import {assign, createMachine} from 'xstate'
 import NextLink from 'next/link'
 import Sidebar from './sidebar'
 import {useDebounce} from '../hooks/use-debounce'
+import {useInterval} from '../hooks/use-interval'
 import {EpochPeriod, useEpochState} from '../providers/epoch-context'
 import {loadPersistentStateValue, persistItem} from '../utils/persist'
+import {publicUrl} from '../utils/public-url'
 import {getNodeStartupPhaseCopy} from '../utils/node-startup-status'
 import {
   DnaSignInDialog,
@@ -83,7 +85,10 @@ import {
   DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY,
   buildManagedLocalRuntimePreset,
 } from '../utils/local-ai-settings'
-import {buildLocalAiRuntimePayload} from '../utils/ai-provider-readiness'
+import {
+  buildLocalAiRuntimePayload,
+  formatAiProviderLabel,
+} from '../utils/ai-provider-readiness'
 import {
   useAutoStartLottery,
   useAutoStartValidation,
@@ -309,7 +314,7 @@ function NormalApp({children}) {
       () => loadPersistentStateValue('validationNotification', 'epoch') || 0
     )
 
-  React.useEffect(() => {
+  const maybeShowUpcomingValidationNotification = React.useCallback(() => {
     if (
       !shouldShowUpcomingValidationNotification(
         epoch,
@@ -329,6 +334,15 @@ function NormalApp({children}) {
     setValidationNotificationEpoch(newEpoch)
     persistItem('validationNotification', 'epoch', newEpoch)
   }, [epoch, validationNotificationEpoch, setValidationNotificationEpoch, t])
+
+  React.useEffect(() => {
+    maybeShowUpcomingValidationNotification()
+  }, [maybeShowUpcomingValidationNotification])
+
+  useInterval(
+    maybeShowUpcomingValidationNotification,
+    epoch?.currentPeriod === EpochPeriod.FlipLottery ? 1000 : null
+  )
 
   React.useEffect(() => {
     if (!localAi.enabled) {
@@ -481,7 +495,19 @@ function BenchmarkResearchBanner() {
   const settings = useSettingsState()
   const [, {updateAiSolverSettings, updateLocalAiSettings}] = useSettings()
   const aiEnabled = Boolean(settings?.aiSolver?.enabled)
+  const aiProvider = settings?.aiSolver?.provider || 'openai'
+  const aiProviderLabel = formatAiProviderLabel(aiProvider)
+  const localAiEnabled = Boolean(settings?.localAi?.enabled)
   const aiSetupDisclosure = useDisclosure()
+  const [aiSetupDefaultProvider, setAiSetupDefaultProvider] =
+    React.useState('local-ai')
+  const openAiSetup = React.useCallback(
+    (provider = 'local-ai') => {
+      setAiSetupDefaultProvider(provider)
+      aiSetupDisclosure.onOpen()
+    },
+    [aiSetupDisclosure]
+  )
 
   return (
     <>
@@ -503,12 +529,51 @@ function BenchmarkResearchBanner() {
           flexWrap="wrap"
           gap={2}
         >
-          <Text fontSize="sm" color={aiEnabled ? 'orange.700' : 'blue.700'}>
-            {t(
-              'Turn on AI if you want AI solving or AI-assisted flip generation. New installs can start with the managed local runtime on this device.'
-            )}
-          </Text>
+          <Stack spacing={0}>
+            <Text fontSize="sm" color={aiEnabled ? 'orange.700' : 'blue.700'}>
+              {aiEnabled
+                ? t('AI is enabled with {{provider}}.', {
+                    provider: aiProviderLabel,
+                  })
+                : t(
+                    'AI is optional. Start local AI here, or paste a provider API key without hunting through settings.'
+                  )}
+            </Text>
+            {aiEnabled && aiProvider === 'local-ai' && !localAiEnabled ? (
+              <Text fontSize="xs" color="orange.700">
+                {t(
+                  'Local AI is selected but the local runtime is not enabled yet.'
+                )}
+              </Text>
+            ) : null}
+          </Stack>
           <Stack isInline spacing={3} align="center">
+            {!aiEnabled ? (
+              <Stack isInline spacing={2} align="center" flexWrap="wrap">
+                <SecondaryButton
+                  h={7}
+                  px={3}
+                  onClick={() => openAiSetup('local-ai')}
+                >
+                  {t('Start local AI')}
+                </SecondaryButton>
+                <SecondaryButton
+                  h={7}
+                  px={3}
+                  onClick={() => openAiSetup('openai')}
+                >
+                  {t('Use API key')}
+                </SecondaryButton>
+              </Stack>
+            ) : (
+              <SecondaryButton
+                h={7}
+                px={3}
+                onClick={() => openAiSetup(aiProvider)}
+              >
+                {t('Change AI setup')}
+              </SecondaryButton>
+            )}
             <Stack isInline spacing={2} align="center">
               <Text
                 fontSize="xs"
@@ -525,7 +590,7 @@ function BenchmarkResearchBanner() {
                     updateAiSolverSettings({enabled: false})
                     return
                   }
-                  aiSetupDisclosure.onOpen()
+                  openAiSetup('local-ai')
                 }}
               />
             </Stack>
@@ -540,7 +605,7 @@ function BenchmarkResearchBanner() {
       <AiEnableDialog
         isOpen={aiSetupDisclosure.isOpen}
         onClose={aiSetupDisclosure.onClose}
-        defaultProvider="local-ai"
+        defaultProvider={aiSetupDefaultProvider}
         providerOptions={[
           {value: 'local-ai', label: 'Local AI on this device'},
           {value: 'openai', label: 'OpenAI'},
@@ -982,7 +1047,7 @@ function OfflineApp() {
         <Stack spacing={3} w="md">
           <Stack isInline spacing={4} align="center">
             <Image
-              src="/static/identity-mark.png"
+              src={publicUrl('/static/identity-mark.png')}
               alt="IdenaAI mark"
               boxSize={12}
             />
@@ -1146,7 +1211,7 @@ function HardForkScreen({
             <Stack spacing={8}>
               <Stack isInline spacing={5} align="center">
                 <Image
-                  src="/static/identity-mark.png"
+                  src={publicUrl('/static/identity-mark.png')}
                   alt={t('IdenaAI mark')}
                   boxSize={20}
                 />

@@ -51,6 +51,28 @@ describe('validation auto-flow helpers', () => {
     ).toBe(false)
   })
 
+  it('does not open the lottery countdown before the final notice window', () => {
+    expect(
+      shouldAutoOpenLottery({
+        currentPeriod: EpochPeriod.FlipLottery,
+        pathname: '/home',
+        isCandidate: true,
+        msUntilValidation: 24 * 60 * 60 * 1000,
+      })
+    ).toBe(false)
+  })
+
+  it('opens the lottery countdown during the final five minutes', () => {
+    expect(
+      shouldAutoOpenLottery({
+        currentPeriod: EpochPeriod.FlipLottery,
+        pathname: '/home',
+        isCandidate: true,
+        msUntilValidation: 5 * 60 * 1000,
+      })
+    ).toBe(true)
+  })
+
   it('forces the lottery window back open near short-session start in session-auto mode', () => {
     expect(
       shouldAutoOpenLottery({

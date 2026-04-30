@@ -13,6 +13,10 @@ import {prepareValidationSession} from '../../../shared/api/validation'
 import {EpochPeriod} from '../../../shared/types'
 import {getNodeBridge} from '../../../shared/utils/node-bridge'
 import {
+  VALIDATION_COUNTDOWN_NOTICE_LEAD_MS,
+  isValidationCountdownNoticeWindow,
+} from '../../../shared/utils/validation-notice'
+import {
   buildValidationIdentityScope,
   buildValidationSessionScopeKey,
   buildValidationSessionNodeScope,
@@ -31,6 +35,7 @@ import {normalizeRehearsalSeedFlipMetaByHash} from '../rehearsal-benchmark'
 const DISMISSED_VALIDATION_SCREEN_STORAGE_KEY = 'didCloseValidationScreen'
 const DISMISSED_LOTTERY_SCREEN_STORAGE_KEY = 'didCloseLotteryScreen'
 export const SESSION_AUTO_LOTTERY_RETURN_LEAD_MS = 5 * 1000
+export {VALIDATION_COUNTDOWN_NOTICE_LEAD_MS}
 // In the real protocol, public flip keys are first broadcast at short-session
 // start, so a rehearsal run can legitimately have assigned-but-not-ready flips
 // for a while after FlipLottery ends.
@@ -66,12 +71,23 @@ export function shouldAutoOpenLottery({
   identityAddress = '',
   epochNumber = null,
   msUntilValidation = null,
+  autoOpenLeadMs = VALIDATION_COUNTDOWN_NOTICE_LEAD_MS,
   forceReturnLeadMs = SESSION_AUTO_LOTTERY_RETURN_LEAD_MS,
 } = {}) {
   if (
     currentPeriod !== EpochPeriod.FlipLottery ||
     !isCandidate ||
     pathname === '/validation/lottery'
+  ) {
+    return false
+  }
+
+  if (
+    !isValidationCountdownNoticeWindow({
+      currentPeriod,
+      msUntilValidation,
+      leadMs: autoOpenLeadMs,
+    })
   ) {
     return false
   }

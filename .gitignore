@@ -103,3 +103,5 @@ main/node/**
 .tmp/
 data/
 downloads/
+environment_files/
+progress.md

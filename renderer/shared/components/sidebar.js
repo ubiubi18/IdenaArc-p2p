@@ -44,6 +44,7 @@ import {IdentityStatus, EpochPeriod, OnboardingStep} from '../types'
 import {useVotingNotification} from '../providers/voting-notification-context'
 import {useOnboarding} from '../providers/onboarding-context'
 import {APP_VERSION_FALLBACK, getSharedGlobal} from '../utils/shared-global'
+import {publicUrl} from '../utils/public-url'
 import {
   onboardingPromotingStep,
   onboardingShowingStep,
@@ -330,7 +331,7 @@ function BandwidthItem(props) {
 export function Logo() {
   return (
     <Image
-      src="/static/identity-mark.png"
+      src={publicUrl('/static/identity-mark.png')}
       alt="IdenaAI mark"
       w="14"
       mt="4"

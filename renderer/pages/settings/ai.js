@@ -1662,6 +1662,23 @@ export default function AiSettingsPage() {
   const [localAiImportBundleResult, setLocalAiImportBundleResult] =
     useState(null)
   const [localAiAggregateResult, setLocalAiAggregateResult] = useState(null)
+  const [
+    isExportingLocalAiSignedArtifact,
+    setIsExportingLocalAiSignedArtifact,
+  ] = useState(false)
+  const [
+    isPublishingLocalAiSignedArtifact,
+    setIsPublishingLocalAiSignedArtifact,
+  ] = useState(false)
+  const [
+    isImportingLocalAiSignedArtifact,
+    setIsImportingLocalAiSignedArtifact,
+  ] = useState(false)
+  const [localAiSignedArtifactResult, setLocalAiSignedArtifactResult] =
+    useState(null)
+  const [localAiSignedArtifactCid, setLocalAiSignedArtifactCid] = useState('')
+  const [localAiSignedArtifactError, setLocalAiSignedArtifactError] =
+    useState('')
   const [localAiFederatedError, setLocalAiFederatedError] = useState('')
   const [providerKeyStatus, setProviderKeyStatus] = useState({
     checked: false,
@@ -1820,6 +1837,13 @@ export default function AiSettingsPage() {
       throw new Error('Local AI bridge is not available in this build')
     }
     return global.localAi
+  }
+
+  const ensureP2pArtifactsBridge = () => {
+    if (!global.p2pArtifacts) {
+      throw new Error('Signed artifact bridge is not available in this build')
+    }
+    return global.p2pArtifacts
   }
 
   const localAiRuntimePayload = useMemo(
@@ -2924,6 +2948,8 @@ export default function AiSettingsPage() {
     try {
       const result = await ensureLocalAiBridge().buildBundle(epoch)
       setLocalAiBuildBundleResult(result)
+      setLocalAiSignedArtifactResult(null)
+      setLocalAiSignedArtifactCid('')
     } catch (error) {
       setLocalAiBuildBundleResult(null)
       setLocalAiFederatedError(formatErrorForToast(error))
@@ -2970,6 +2996,95 @@ export default function AiSettingsPage() {
       setIsAggregatingLocalAiBundles(false)
     }
   }, [])
+
+  const runLocalAiExportSignedArtifact = useCallback(async () => {
+    const bundlePath = String(
+      (localAiBuildBundleResult && localAiBuildBundleResult.bundlePath) || ''
+    ).trim()
+
+    if (!bundlePath) {
+      setLocalAiSignedArtifactError(
+        t('Build a federated bundle before exporting a signed artifact.')
+      )
+      return
+    }
+
+    setIsExportingLocalAiSignedArtifact(true)
+    setLocalAiSignedArtifactError('')
+
+    try {
+      const result = await ensureP2pArtifactsBridge().exportSignedArtifact({
+        artifactType: 'local-ai-update-bundle',
+        bundlePath,
+        artifactPath:
+          (localAiBuildBundleResult && localAiBuildBundleResult.artifactPath) ||
+          '',
+        releasePolicy: 'private-by-default-explicit-publish-only',
+      })
+      setLocalAiSignedArtifactResult(result)
+    } catch (error) {
+      setLocalAiSignedArtifactResult(null)
+      setLocalAiSignedArtifactError(formatErrorForToast(error))
+    } finally {
+      setIsExportingLocalAiSignedArtifact(false)
+    }
+  }, [localAiBuildBundleResult, t])
+
+  const runLocalAiPublishSignedArtifact = useCallback(async () => {
+    const envelopePath = String(
+      (localAiSignedArtifactResult &&
+        localAiSignedArtifactResult.envelopePath) ||
+        ''
+    ).trim()
+
+    if (!envelopePath) {
+      setLocalAiSignedArtifactError(
+        t('Export a signed artifact before publishing it to IPFS.')
+      )
+      return
+    }
+
+    setIsPublishingLocalAiSignedArtifact(true)
+    setLocalAiSignedArtifactError('')
+
+    try {
+      const result = await ensureP2pArtifactsBridge().publishArtifactToIpfs({
+        envelopePath,
+        pin: true,
+      })
+      setLocalAiSignedArtifactResult(result)
+      if (result && result.cid) {
+        setLocalAiSignedArtifactCid(result.cid)
+      }
+    } catch (error) {
+      setLocalAiSignedArtifactError(formatErrorForToast(error))
+    } finally {
+      setIsPublishingLocalAiSignedArtifact(false)
+    }
+  }, [localAiSignedArtifactResult, t])
+
+  const runLocalAiImportSignedArtifact = useCallback(async () => {
+    const cid = String(localAiSignedArtifactCid || '').trim()
+
+    if (!cid) {
+      setLocalAiSignedArtifactError(
+        t('Provide a CID before verifying or importing a signed artifact.')
+      )
+      return
+    }
+
+    setIsImportingLocalAiSignedArtifact(true)
+    setLocalAiSignedArtifactError('')
+
+    try {
+      const result = await ensureP2pArtifactsBridge().importArtifactByCid({cid})
+      setLocalAiSignedArtifactResult(result)
+    } catch (error) {
+      setLocalAiSignedArtifactError(formatErrorForToast(error))
+    } finally {
+      setIsImportingLocalAiSignedArtifact(false)
+    }
+  }, [localAiSignedArtifactCid, t])
 
   const hasSessionKeyForProvider = async (provider) => {
     if (isLocalAiProvider(provider)) {
@@ -6828,6 +6943,139 @@ export default function AiSettingsPage() {
                             >
                               {t('Import Bundle')}
                             </SecondaryButton>
+                            <Box
+                              borderWidth="1px"
+                              borderColor="gray.100"
+                              borderRadius="md"
+                              p={3}
+                            >
+                              <Stack spacing={3}>
+                                <Stack spacing={1}>
+                                  <Text fontWeight={500}>
+                                    {t('Signed artifact')}
+                                  </Text>
+                                  <Text color="muted" fontSize="sm">
+                                    {t(
+                                      'Manual sharing only. IPFS publish stores the signed envelope by CID; no peer sync starts here.'
+                                    )}
+                                  </Text>
+                                </Stack>
+                                <Stack isInline spacing={2}>
+                                  <SecondaryButton
+                                    isLoading={isExportingLocalAiSignedArtifact}
+                                    isDisabled={
+                                      !localAiBuildBundleResult ||
+                                      !localAiBuildBundleResult.bundlePath
+                                    }
+                                    onClick={runLocalAiExportSignedArtifact}
+                                  >
+                                    {t('Export signed artifact')}
+                                  </SecondaryButton>
+                                  <SecondaryButton
+                                    isLoading={
+                                      isPublishingLocalAiSignedArtifact
+                                    }
+                                    isDisabled={
+                                      !localAiSignedArtifactResult ||
+                                      !localAiSignedArtifactResult.envelopePath
+                                    }
+                                    onClick={runLocalAiPublishSignedArtifact}
+                                  >
+                                    {t('Publish to IPFS')}
+                                  </SecondaryButton>
+                                </Stack>
+                                <SettingsFormControl>
+                                  <SettingsFormLabel>
+                                    {t('Artifact CID')}
+                                  </SettingsFormLabel>
+                                  <Input
+                                    value={localAiSignedArtifactCid}
+                                    onChange={(e) =>
+                                      setLocalAiSignedArtifactCid(
+                                        e.target.value
+                                      )
+                                    }
+                                    placeholder="bafy..."
+                                  />
+                                </SettingsFormControl>
+                                <SecondaryButton
+                                  isLoading={isImportingLocalAiSignedArtifact}
+                                  isDisabled={!localAiSignedArtifactCid.trim()}
+                                  onClick={runLocalAiImportSignedArtifact}
+                                >
+                                  {t('Verify/import artifact')}
+                                </SecondaryButton>
+                                {localAiSignedArtifactError ? (
+                                  <Text color="orange.500" fontSize="sm">
+                                    {localAiSignedArtifactError}
+                                  </Text>
+                                ) : null}
+                                {localAiSignedArtifactResult ? (
+                                  <Stack spacing={1}>
+                                    <Text color="muted" fontSize="sm">
+                                      {t('Artifact type')}:{' '}
+                                      {localAiSignedArtifactResult.artifactType ||
+                                        '-'}
+                                    </Text>
+                                    <Text color="muted" fontSize="sm">
+                                      {t('Signature')}:{' '}
+                                      {localAiSignedArtifactResult.verification &&
+                                      localAiSignedArtifactResult.verification
+                                        .checks &&
+                                      localAiSignedArtifactResult.verification
+                                        .checks.signature
+                                        ? t('Yes')
+                                        : t('No')}
+                                    </Text>
+                                    <Text color="muted" fontSize="sm">
+                                      {t('Hash')}:{' '}
+                                      {localAiSignedArtifactResult.verification &&
+                                      localAiSignedArtifactResult.verification
+                                        .checks &&
+                                      localAiSignedArtifactResult.verification
+                                        .checks.hash
+                                        ? t('Yes')
+                                        : t('No')}
+                                    </Text>
+                                    <Text color="muted" fontSize="sm">
+                                      {t('Replay/source')}:{' '}
+                                      {localAiSignedArtifactResult.verification &&
+                                      localAiSignedArtifactResult.verification
+                                        .checks &&
+                                      localAiSignedArtifactResult.verification
+                                        .checks.replay
+                                        ? t('Yes')
+                                        : t('No')}
+                                    </Text>
+                                    <Text color="muted" fontSize="sm">
+                                      {t('CID')}:{' '}
+                                      {localAiSignedArtifactResult.cid || '-'}
+                                    </Text>
+                                    <Text color="muted" fontSize="sm">
+                                      {t('Envelope path')}:{' '}
+                                      {localAiSignedArtifactResult.envelopePath ||
+                                        '-'}
+                                    </Text>
+                                    {localAiSignedArtifactResult.consumption ? (
+                                      <Text color="muted" fontSize="sm">
+                                        {t('Local import')}:{' '}
+                                        {localAiSignedArtifactResult.consumption
+                                          .imported
+                                          ? t('Accepted')
+                                          : t('Not accepted')}{' '}
+                                        {localAiSignedArtifactResult.consumption
+                                          .reason
+                                          ? `· ${formatLocalAiFederatedReason(
+                                              localAiSignedArtifactResult
+                                                .consumption.reason
+                                            )}`
+                                          : ''}
+                                      </Text>
+                                    ) : null}
+                                  </Stack>
+                                ) : null}
+                              </Stack>
+                            </Box>
                             {localAiFederatedError ? (
                               <Text color="orange.500" fontSize="sm">
                                 {localAiFederatedError}

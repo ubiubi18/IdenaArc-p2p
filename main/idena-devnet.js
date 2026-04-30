@@ -31,6 +31,7 @@ const VALIDATION_DEVNET_DEFAULT_SHORT_SESSION_SECONDS = 2 * 60
 const VALIDATION_DEVNET_DEFAULT_AFTER_LONG_SESSION_SECONDS = 60
 const VALIDATION_DEVNET_DEFAULT_VALIDATION_PADDING_SECONDS = 5 * 60
 const VALIDATION_DEVNET_DEFAULT_LEAD_SECONDS = 8 * 60
+const VALIDATION_DEVNET_ONE_DAY_LEAD_SECONDS = 24 * 60 * 60
 const VALIDATION_DEVNET_MIN_LEAD_SECONDS = 20
 const VALIDATION_DEVNET_DEFAULT_NETWORK_BASE = 33000
 const VALIDATION_DEVNET_DEFAULT_INITIAL_EPOCH = 1
@@ -1356,6 +1357,7 @@ function buildValidationDevnetPlan({
   seedFlipCount,
   firstCeremonyLeadSeconds = VALIDATION_DEVNET_DEFAULT_LEAD_SECONDS,
   firstCeremonyUnix,
+  delayFirstSessionOneDay = false,
   initialEpoch = VALIDATION_DEVNET_DEFAULT_INITIAL_EPOCH,
   networkId,
   afterLongSessionSeconds,
@@ -1364,13 +1366,17 @@ function buildValidationDevnetPlan({
 } = {}) {
   const nextNodeCount = Math.max(3, normalizePositiveInteger(nodeCount, 5))
   const nowUnix = Math.floor(now() / 1000)
+  const delayedFirstSession = delayFirstSessionOneDay === true
+  const requestedFirstCeremonyLeadSeconds = delayedFirstSession
+    ? VALIDATION_DEVNET_ONE_DAY_LEAD_SECONDS
+    : firstCeremonyLeadSeconds
   const nextFirstCeremonyUnix =
     normalizePositiveInteger(firstCeremonyUnix, 0) ||
     nowUnix +
       Math.max(
         VALIDATION_DEVNET_MIN_LEAD_SECONDS,
         normalizePositiveInteger(
-          firstCeremonyLeadSeconds,
+          requestedFirstCeremonyLeadSeconds,
           VALIDATION_DEVNET_DEFAULT_LEAD_SECONDS
         )
       )
@@ -1435,6 +1441,8 @@ function buildValidationDevnetPlan({
     createdAt: new Date(now()).toISOString(),
     networkId: nextNetworkId,
     firstCeremonyUnix: nextFirstCeremonyUnix,
+    firstCeremonyLeadSeconds: Math.max(0, nextFirstCeremonyUnix - nowUnix),
+    scheduleMode: delayedFirstSession ? 'one-day-delay' : 'standard',
     initialEpoch: nextInitialEpoch,
     requiredFlipsPerIdentity,
     swarmKey: sharedSwarmKey,
@@ -1629,6 +1637,9 @@ function createValidationDevnetController({
       firstCeremonyAt: firstCeremonyUnix
         ? new Date(firstCeremonyUnix * 1000).toISOString()
         : null,
+      firstCeremonyLeadSeconds:
+        run && run.plan ? run.plan.firstCeremonyLeadSeconds : null,
+      scheduleMode: run && run.plan ? run.plan.scheduleMode : null,
       countdownSeconds:
         typeof firstCeremonyUnix === 'number'
           ? Math.max(0, firstCeremonyUnix - Math.floor(now() / 1000))
@@ -2735,6 +2746,7 @@ function createValidationDevnetController({
         seedFlipCount: payload.seedFlipCount,
         firstCeremonyLeadSeconds: payload.firstCeremonyLeadSeconds,
         firstCeremonyUnix: payload.firstCeremonyUnix,
+        delayFirstSessionOneDay: payload.delayFirstSessionOneDay,
         initialEpoch: payload.initialEpoch,
         networkId: payload.networkId,
         afterLongSessionSeconds: payload.afterLongSessionSeconds,

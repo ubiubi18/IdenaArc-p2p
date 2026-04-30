@@ -1,4 +1,4 @@
-const {join, resolve} = require('path')
+const {basename, dirname, join, resolve} = require('path')
 const os = require('os')
 const https = require('https')
 const {
@@ -151,6 +151,12 @@ const {
   shouldConnectValidationDevnetStatus,
 } = require('./idena-devnet')
 const {createIdenaArcManager} = require('./idena-arc/manager')
+const {
+  normalizeAddress,
+  recoverIdenaSignatureAddress,
+  verifyIdenaSignature,
+} = require('./idena-arc/crypto')
+const {createP2pArtifactManager} = require('./p2p-artifacts')
 
 const NodeUpdater = require('./node-updater')
 
@@ -171,6 +177,9 @@ const localAiFederated = createLocalAiFederated({
   logger,
   isDev,
   getBaseModelReference: getMainLocalAiSettings,
+  getIdentity: getNodeSigningIdentity,
+  signPayload: signPayloadWithLoopbackNode,
+  verifySignature: verifyPayloadWithNodeSignature,
 })
 
 const IMAGE_SEARCH_SOURCE_TIMEOUT_MS = 8000
@@ -182,6 +191,69 @@ const BASE_EXTERNAL_API_URL = 'http://localhost:9009'
 const RPC_MAX_METHOD_LENGTH = 128
 const SOCIAL_RPC_MAX_REQUEST_ID_LENGTH = 128
 const SOCIAL_RPC_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
+const NODE_RPC_MAX_PARAM_COUNT = 8
+const NODE_ALLOWED_RPC_METHODS = new Set([
+  'bcn_block',
+  'bcn_blockAt',
+  'bcn_burntCoins',
+  'bcn_estimateTx',
+  'bcn_feePerGas',
+  'bcn_getRawTx',
+  'bcn_keyWord',
+  'bcn_lastBlock',
+  'bcn_pendingTransactions',
+  'bcn_syncing',
+  'bcn_transaction',
+  'bcn_transactions',
+  'bcn_txReceipt',
+  'contract_batchReadData',
+  'contract_call',
+  'contract_deploy',
+  'contract_estimateCall',
+  'contract_estimateDeploy',
+  'contract_estimateTerminate',
+  'contract_getStake',
+  'contract_readData',
+  'contract_readonlyCall',
+  'contract_terminate',
+  'dna_activateInvite',
+  'dna_activateInviteToRandAddr',
+  'dna_becomeOffline',
+  'dna_becomeOnline',
+  'dna_ceremonyIntervals',
+  'dna_delegate',
+  'dna_epoch',
+  'dna_exportKey',
+  'dna_getBalance',
+  'dna_getCoinbaseAddr',
+  'dna_globalState',
+  'dna_identities',
+  'dna_identity',
+  'dna_importKey',
+  'dna_sendInvite',
+  'dna_sendTransaction',
+  'dna_sign',
+  'dna_storeToIpfs',
+  'dna_undelegate',
+  'dna_version',
+  'flip_delete',
+  'flip_get',
+  'flip_longHashes',
+  'flip_prepareValidationSession',
+  'flip_shortHashes',
+  'flip_submit',
+  'flip_submitLongAnswers',
+  'flip_submitShortAnswers',
+  'flip_words',
+  'ipfs_add',
+  'ipfs_get',
+  'net_peers',
+])
+const NODE_LOOPBACK_ONLY_RPC_METHODS = new Set([
+  'dna_exportKey',
+  'dna_importKey',
+  'dna_sign',
+])
 const SOCIAL_ALLOWED_RPC_METHODS = new Set([
   'bcn_block',
   'bcn_blockAt',
@@ -206,6 +278,16 @@ let nodeDownloadPromise = null
 let tray
 const validationDevnet = createDefaultValidationDevnetController({logger})
 const idenaArcManager = createIdenaArcManager({logger, validationDevnet})
+const p2pArtifactManager = createP2pArtifactManager({
+  logger,
+  getIdentity: getNodeSigningIdentity,
+  signPayload: signPayloadWithLoopbackNode,
+  callNodeRpc: callNodeRpcStrict,
+  consumeVerifiedArtifact: consumeVerifiedP2pArtifact,
+  verifyArcTraceBundle: idenaArcManager.verifyTraceBundle,
+  verifyArcAnnotationBundle: idenaArcManager.verifyAnnotationBundle,
+  verifyArcTrainingDataset: idenaArcManager.verifyTrainingDataset,
+})
 
 const nodeUpdater = new NodeUpdater(logger)
 
@@ -380,6 +462,138 @@ function estimatePayloadBytes(value) {
   }
 }
 
+function isOptionalShortString(value, maxLength = 512) {
+  return value == null || value === '' || isShortString(value, maxLength)
+}
+
+function hasOnlyPlainObjectParams(params, count = 1) {
+  return params.length === count && params.every((item) => isPlainObject(item))
+}
+
+function hasOnlyShortStringParams(params, count, maxLength = 512) {
+  return (
+    params.length === count &&
+    params.every((item) => isShortString(item, maxLength))
+  )
+}
+
+function hasNoParams(params) {
+  return params.length === 0
+}
+
+function validateNodeRpcParams(method, params) {
+  switch (method) {
+    case 'bcn_feePerGas':
+    case 'bcn_lastBlock':
+    case 'bcn_syncing':
+    case 'dna_ceremonyIntervals':
+    case 'dna_epoch':
+    case 'dna_getCoinbaseAddr':
+    case 'dna_globalState':
+    case 'dna_identities':
+    case 'dna_version':
+    case 'flip_longHashes':
+    case 'flip_shortHashes':
+    case 'net_peers':
+      return hasNoParams(params) ? null : 'invalid_rpc_params'
+
+    case 'bcn_blockAt':
+    case 'bcn_keyWord':
+      return params.length === 1 && isFiniteNonNegativeInteger(params[0])
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'bcn_block':
+    case 'bcn_transaction':
+    case 'bcn_txReceipt':
+    case 'dna_exportKey':
+    case 'flip_delete':
+    case 'flip_get':
+    case 'flip_words':
+    case 'ipfs_get':
+      return hasOnlyShortStringParams(params, 1, 512)
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'dna_getBalance':
+    case 'dna_identity':
+      return params.length === 0 || hasOnlyShortStringParams(params, 1, 512)
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'dna_sign':
+      return (params.length === 1 || params.length === 2) &&
+        isShortString(params[0], 8192) &&
+        isOptionalShortString(params[1], 32)
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'ipfs_add':
+      return params.length === 2 &&
+        isShortString(params[0], SOCIAL_RPC_MAX_PAYLOAD_BYTES) &&
+        typeof params[1] === 'boolean'
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'contract_batchReadData':
+      return params.length === 2 &&
+        isShortString(params[0], 512) &&
+        Array.isArray(params[1]) &&
+        params[1].length <= 256
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'contract_readData':
+      return params.length >= 2 &&
+        params.length <= 3 &&
+        isShortString(params[0], 512) &&
+        isShortString(params[1], 512) &&
+        isOptionalShortString(params[2], 64)
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'bcn_estimateTx':
+    case 'bcn_getRawTx':
+    case 'bcn_pendingTransactions':
+    case 'bcn_transactions':
+    case 'contract_call':
+    case 'contract_deploy':
+    case 'contract_estimateCall':
+    case 'contract_estimateDeploy':
+    case 'contract_estimateTerminate':
+    case 'contract_readonlyCall':
+    case 'contract_terminate':
+    case 'dna_activateInvite':
+    case 'dna_activateInviteToRandAddr':
+    case 'dna_becomeOffline':
+    case 'dna_becomeOnline':
+    case 'dna_delegate':
+    case 'dna_importKey':
+    case 'dna_sendInvite':
+    case 'dna_sendTransaction':
+    case 'dna_storeToIpfs':
+    case 'dna_undelegate':
+    case 'flip_prepareValidationSession':
+    case 'flip_submit':
+    case 'flip_submitLongAnswers':
+    case 'flip_submitShortAnswers':
+      return hasOnlyPlainObjectParams(params, 1) ? null : 'invalid_rpc_params'
+
+    case 'bcn_burntCoins':
+      return params.length === 0 || hasOnlyPlainObjectParams(params, 1)
+        ? null
+        : 'invalid_rpc_params'
+
+    case 'contract_getStake':
+      return hasOnlyShortStringParams(params, 1, 512)
+        ? null
+        : 'invalid_rpc_params'
+
+    default:
+      return 'unsupported_rpc_method'
+  }
+}
+
 function validateSocialRpcRequest(payload = {}) {
   const requestId = payload && payload.requestId
   const method = payload && payload.method
@@ -463,19 +677,24 @@ function validateSocialRpcRequest(payload = {}) {
   }
 }
 
-function validateNodeRpcPayload(payload = {}) {
+function validateNodeRpcPayload(payload = {}, connection = null) {
   const method = payload && payload.method
   const params = payload && payload.params
+  const normalizedMethod = typeof method === 'string' ? method.trim() : ''
 
-  if (
-    typeof method !== 'string' ||
-    method.trim().length < 1 ||
-    method.trim().length > RPC_MAX_METHOD_LENGTH
-  ) {
+  if (!normalizedMethod || normalizedMethod.length > RPC_MAX_METHOD_LENGTH) {
     return 'invalid_rpc_method'
   }
 
+  if (!NODE_ALLOWED_RPC_METHODS.has(normalizedMethod)) {
+    return 'unsupported_rpc_method'
+  }
+
   if (!Array.isArray(params)) {
+    return 'invalid_rpc_params'
+  }
+
+  if (params.length > NODE_RPC_MAX_PARAM_COUNT) {
     return 'invalid_rpc_params'
   }
 
@@ -483,7 +702,14 @@ function validateNodeRpcPayload(payload = {}) {
     return 'rpc_payload_too_large'
   }
 
-  return null
+  if (
+    NODE_LOOPBACK_ONLY_RPC_METHODS.has(normalizedMethod) &&
+    (!connection || !isLoopbackRpcUrl(connection.url))
+  ) {
+    return 'loopback_rpc_required'
+  }
+
+  return validateNodeRpcParams(normalizedMethod, params)
 }
 
 function getNodeRpcConnection() {
@@ -586,7 +812,8 @@ function maybeEmitRequestedValidationDevnetConnectPayload(status) {
 }
 
 async function performNodeRpc(payload = {}) {
-  const validationError = validateNodeRpcPayload(payload)
+  const connection = getNodeRpcConnection()
+  const validationError = validateNodeRpcPayload(payload, connection)
 
   if (validationError) {
     return {
@@ -596,7 +823,7 @@ async function performNodeRpc(payload = {}) {
     }
   }
 
-  const {url, key} = getNodeRpcConnection()
+  const {url, key} = connection
   const requestBody = {
     method: String(payload.method || '').trim(),
     params: Array.isArray(payload.params) ? payload.params : [],
@@ -625,6 +852,215 @@ async function performNodeRpc(payload = {}) {
         message: error?.message || 'rpc_proxy_failed',
       },
     }
+  }
+}
+
+function isLoopbackRpcUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim())
+
+    return (
+      url.protocol === 'http:' &&
+      ['127.0.0.1', 'localhost', '::1'].includes(url.hostname)
+    )
+  } catch {
+    return false
+  }
+}
+
+async function callNodeRpcStrict(method, params = []) {
+  const response = await performNodeRpc({
+    method,
+    params,
+  })
+
+  if (response && response.error) {
+    throw new Error(
+      response.error.message || response.error || `Idena RPC error: ${method}`
+    )
+  }
+
+  return response ? response.result : undefined
+}
+
+async function getNodeSigningIdentity() {
+  const address = await callNodeRpcStrict('dna_getCoinbaseAddr', [])
+
+  return {
+    address: normalizeAddress(address),
+    status: null,
+  }
+}
+
+async function signPayloadWithLoopbackNode(message) {
+  const connection = getNodeRpcConnection()
+
+  if (!isLoopbackRpcUrl(connection.url)) {
+    throw new Error(
+      'Local node signing requires the built-in or loopback Idena RPC endpoint'
+    )
+  }
+
+  const text = String(message || '')
+  const signature = String(
+    await callNodeRpcStrict('dna_sign', [text, 'prefix'])
+  ).trim()
+
+  if (!signature) {
+    throw new Error('Idena node returned an empty signature')
+  }
+
+  recoverIdenaSignatureAddress(text, signature, 'prefix')
+
+  return signature
+}
+
+async function verifyPayloadWithNodeSignature({payload, identity, signature}) {
+  return verifyIdenaSignature(
+    JSON.stringify(payload),
+    signature,
+    identity,
+    'prefix'
+  )
+}
+
+function safeP2pFileName(value, fallback = 'artifact.json') {
+  const normalized = basename(String(value || '').trim())
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || fallback
+}
+
+function shortP2pHash(value) {
+  return String(value || '')
+    .replace(/^sha256:/, '')
+    .replace(/[^a-fA-F0-9]/g, '')
+    .slice(0, 20)
+}
+
+function p2pArtifactAttachments(envelope) {
+  return Array.isArray(envelope && envelope.attachments)
+    ? envelope.attachments
+    : []
+}
+
+function p2pImportReason(importResult, fallback) {
+  if (importResult && importResult.reason) {
+    return importResult.reason
+  }
+
+  if (importResult && importResult.accepted) {
+    return null
+  }
+
+  return fallback
+}
+
+async function materializeLocalAiP2pBundle(envelope) {
+  const incomingDir = join(appDataPath('userData'), 'local-ai', 'incoming')
+  const bundleHash =
+    shortP2pHash(envelope.payloadHash) || Date.now().toString(36)
+  const bundlePath = join(incomingDir, `p2p-${bundleHash}.json`)
+
+  await fs.ensureDir(incomingDir)
+  await fs.writeJson(bundlePath, envelope.payload, {spaces: 2})
+
+  let artifactPath = null
+  const adapterAttachment = p2pArtifactAttachments(envelope).find(
+    (attachment) => attachment.role === 'local-ai-adapter-artifact'
+  )
+
+  if (adapterAttachment) {
+    const artifactFile = safeP2pFileName(
+      adapterAttachment.file,
+      `adapter-${bundleHash}.bin`
+    )
+
+    artifactPath = join(dirname(bundlePath), artifactFile)
+    await fs.writeFile(
+      artifactPath,
+      Buffer.from(String(adapterAttachment.contentBase64 || ''), 'base64')
+    )
+  }
+
+  return {
+    bundlePath,
+    artifactPath,
+  }
+}
+
+async function consumeVerifiedP2pArtifact({envelope, envelopePath}) {
+  if (!envelope) {
+    return {
+      imported: false,
+      reason: 'artifact_envelope_required',
+      envelopePath,
+    }
+  }
+
+  if (envelope.artifactType === 'arc-annotation-bundle') {
+    const annotationImportResult = await idenaArcManager.importAnnotationBundle(
+      {
+        annotationBundle: envelope.payload,
+      }
+    )
+
+    return {
+      imported: Boolean(
+        annotationImportResult && annotationImportResult.accepted
+      ),
+      reason: p2pImportReason(
+        annotationImportResult,
+        'arc_annotation_import_rejected'
+      ),
+      envelopePath,
+      idenaArc: annotationImportResult,
+    }
+  }
+
+  if (envelope.artifactType === 'arc-training-dataset') {
+    const datasetImportResult = await idenaArcManager.importTrainingDataset({
+      dataset: envelope.payload,
+    })
+
+    return {
+      imported: Boolean(datasetImportResult && datasetImportResult.accepted),
+      reason: p2pImportReason(
+        datasetImportResult,
+        'arc_training_dataset_import_rejected'
+      ),
+      envelopePath,
+      idenaArc: datasetImportResult,
+    }
+  }
+
+  if (envelope.artifactType !== 'local-ai-update-bundle') {
+    return {
+      imported: false,
+      reason: 'no_local_consumer_for_artifact_type',
+      envelopePath,
+    }
+  }
+
+  const materialized = await materializeLocalAiP2pBundle(envelope)
+  const importResult = await localAiFederated.importUpdateBundle(
+    materialized.bundlePath
+  )
+  let reason = 'local_ai_import_rejected'
+  if (importResult && importResult.reason) {
+    reason = importResult.reason
+  } else if (importResult && importResult.accepted) {
+    reason = null
+  }
+
+  return {
+    imported: Boolean(importResult && importResult.accepted),
+    reason,
+    envelopePath,
+    localAi: importResult,
+    bundlePath: materialized.bundlePath,
+    artifactPath: materialized.artifactPath,
   }
 }
 
@@ -2674,12 +3110,44 @@ handleTrusted('idenaArc.computeFinalSeed', async (_event, payload) =>
   idenaArcManager.computeFinalSeed(payload)
 )
 
+handleTrusted('idenaArc.prepareArcAgiRuntime', async (_event, payload) =>
+  idenaArcManager.prepareArcAgiRuntime(payload)
+)
+
+handleTrusted('idenaArc.listArcAgiPublicGames', async (_event, payload) =>
+  idenaArcManager.listArcAgiPublicGames(payload)
+)
+
 handleTrusted('idenaArc.generateGame', async (_event, payload) =>
   idenaArcManager.generateGame(payload)
 )
 
 handleTrusted('idenaArc.submitTrace', async (_event, payload) =>
   idenaArcManager.submitTrace(payload)
+)
+
+handleTrusted('idenaArc.previewTrace', async (_event, payload) =>
+  idenaArcManager.previewTrace(payload)
+)
+
+handleTrusted('idenaArc.runLocalAiAttempt', async (_event, payload) =>
+  idenaArcManager.runLocalAiAttempt(payload)
+)
+
+handleTrusted('idenaArc.reviewTeacherJourney', async (_event, payload) =>
+  idenaArcManager.reviewTeacherJourney(payload)
+)
+
+handleTrusted('idenaArc.compressTeacherFeedback', async (_event, payload) =>
+  idenaArcManager.compressTeacherFeedback(payload)
+)
+
+handleTrusted('idenaArc.finalizeTeacherJourney', async (_event, payload) =>
+  idenaArcManager.finalizeTeacherJourney(payload)
+)
+
+handleTrusted('idenaArc.submitArcAgiScorecard', async (_event, payload) =>
+  idenaArcManager.submitArcAgiScorecard(payload)
 )
 
 handleTrusted('idenaArc.verifyTraceBundle', async (_event, payload) =>
@@ -2704,6 +3172,22 @@ handleTrusted('idenaArc.exportTrainingDataset', async (_event, payload) =>
 
 handleTrusted('idenaArc.uploadTraceBundle', async (_event, payload) =>
   idenaArcManager.uploadTraceBundle(payload)
+)
+
+handleTrusted('p2pArtifacts.exportSignedArtifact', async (_event, payload) =>
+  p2pArtifactManager.exportSignedArtifact(payload)
+)
+
+handleTrusted('p2pArtifacts.verifySignedArtifact', async (_event, payload) =>
+  p2pArtifactManager.verifySignedArtifact(payload)
+)
+
+handleTrusted('p2pArtifacts.publishArtifactToIpfs', async (_event, payload) =>
+  p2pArtifactManager.publishArtifactToIpfs(payload)
+)
+
+handleTrusted('p2pArtifacts.importArtifactByCid', async (_event, payload) =>
+  p2pArtifactManager.importArtifactByCid(payload)
 )
 
 handleTrusted(AI_SOLVER_COMMAND, async (_event, command, payload) => {

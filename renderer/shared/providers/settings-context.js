@@ -573,6 +573,11 @@ export function useSettingsState() {
   return context
 }
 
+export function useOptionalSettingsState(fallback = initialState) {
+  const context = React.useContext(SettingsStateContext)
+  return context === undefined ? fallback : context
+}
+
 export function useSettingsDispatch() {
   const context = React.useContext(SettingsDispatchContext)
   if (context === undefined) {
@@ -581,6 +586,11 @@ export function useSettingsDispatch() {
     )
   }
   return context
+}
+
+export function useOptionalSettingsDispatch(fallback = {}) {
+  const context = React.useContext(SettingsDispatchContext)
+  return context === undefined ? fallback : context
 }
 
 export function useSettings() {

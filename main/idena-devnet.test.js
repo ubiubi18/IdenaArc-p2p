@@ -59,6 +59,20 @@ describe('validation devnet helpers', () => {
     )
   })
 
+  it('can delay the first rehearsal session by one day', () => {
+    const now = new Date('2026-04-21T12:00:00.000Z').getTime()
+    const plan = buildValidationDevnetPlan({
+      baseDir: '/tmp/idena-validation-devnet',
+      now: () => now,
+      networkId: 44001,
+      delayFirstSessionOneDay: true,
+    })
+
+    expect(plan.firstCeremonyUnix).toBe(Math.floor(now / 1000) + 24 * 60 * 60)
+    expect(plan.firstCeremonyLeadSeconds).toBe(24 * 60 * 60)
+    expect(plan.scheduleMode).toBe('one-day-delay')
+  })
+
   it('builds isolated node config with shared genesis and bootnodes', () => {
     const plan = buildValidationDevnetPlan({
       baseDir: '/tmp/idena-validation-devnet',

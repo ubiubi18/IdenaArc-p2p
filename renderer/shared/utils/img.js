@@ -51,7 +51,6 @@ const imageTypes = [
   'image/jpeg',
   'image/pjpeg',
   'image/png',
-  'image/svg+xml',
   'image/tiff',
   'image/webp',
   'image/x-icon',

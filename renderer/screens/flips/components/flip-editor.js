@@ -59,22 +59,7 @@ import {
 } from '../../../shared/components/icons'
 
 function loadImageEditor() {
-  if (typeof window === 'undefined') return null
-
-  try {
-    // eslint-disable-next-line global-require
-    const imageEditorModule = require('@toast-ui/react-image-editor')
-    return imageEditorModule.default || imageEditorModule
-  } catch (error) {
-    if (global.logger && typeof global.logger.warn === 'function') {
-      global.logger.warn(
-        'flipEditor optional image editor unavailable',
-        (error && error.message) || error
-      )
-    }
-
-    return null
-  }
+  return null
 }
 
 const ImageEditor = loadImageEditor()
@@ -107,6 +92,42 @@ const BLANK_IMAGE =
         height: IMAGE_HEIGHT,
       })
     : BLANK_IMAGE_DATAURL
+const SAFE_RASTER_IMAGE_MIME_TYPES = new Set([
+  'image/apng',
+  'image/bmp',
+  'image/gif',
+  'image/jpeg',
+  'image/pjpeg',
+  'image/png',
+  'image/webp',
+  'image/x-icon',
+])
+const SAFE_RASTER_IMAGE_ACCEPT = Array.from(SAFE_RASTER_IMAGE_MIME_TYPES).join(
+  ','
+)
+
+function isSvgImageSource(value) {
+  const text = String(value || '').trim()
+  const lowered = text.toLowerCase()
+
+  if (!text) {
+    return false
+  }
+
+  if (lowered.startsWith('data:image/svg+xml')) {
+    return true
+  }
+
+  try {
+    return new URL(text).pathname.toLowerCase().endsWith('.svg')
+  } catch {
+    return /\.svg(?:[?#]|$)/iu.test(text)
+  }
+}
+
+function isSafeRasterImageFile(file) {
+  return Boolean(file && SAFE_RASTER_IMAGE_MIME_TYPES.has(file.type))
+}
 
 function resizeImageDataUrl(
   url,
@@ -244,6 +265,19 @@ export default function FlipEditor({
       const editor = customEditor || editors[idx]
 
       if (!editor) return
+
+      if (isSvgImageSource(url)) {
+        toast({
+          // eslint-disable-next-line react/display-name
+          render: () => (
+            <Toast
+              title={t('SVG images are not supported. Use a raster image.')}
+              status="error"
+            />
+          ),
+        })
+        return
+      }
 
       if (!url) {
         editor
@@ -391,7 +425,16 @@ export default function FlipEditor({
           })
       }
     },
-    [editors, handleOnChanged, idx, insertImageMode, logEditorError, onChange]
+    [
+      editors,
+      handleOnChanged,
+      idx,
+      insertImageMode,
+      logEditorError,
+      onChange,
+      t,
+      toast,
+    ]
   )
 
   const {
@@ -404,7 +447,17 @@ export default function FlipEditor({
   const handleUpload = (e) => {
     e.preventDefault()
     const file = e.target.files[0]
-    if (!file || !file.type.startsWith('image')) {
+    if (!isSafeRasterImageFile(file)) {
+      toast({
+        // eslint-disable-next-line react/display-name
+        render: () => (
+          <Toast
+            title={t('Only raster images are supported here.')}
+            status="error"
+          />
+        ),
+      })
+      e.target.value = ''
       return
     }
     const reader = new FileReader()
@@ -900,7 +953,7 @@ export default function FlipEditor({
                 <input
                   id="file"
                   type="file"
-                  accept="image/*"
+                  accept={SAFE_RASTER_IMAGE_ACCEPT}
                   ref={uploaderRef}
                   onChange={handleUpload}
                 />

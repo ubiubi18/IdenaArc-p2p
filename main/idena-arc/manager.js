@@ -12,7 +12,6 @@ const {
   buildSaltCommitment,
   assertSaltCommitment,
   deriveFinalSeed,
-  privateKeyToAddress,
   normalizeAddress,
   idenaSignatureHashPrefixed,
   recoverIdenaSignatureAddress,
@@ -30,12 +29,33 @@ const ANNOTATION_BUNDLE_PROTOCOL = 'idena-arc-annotation-bundle-v0'
 const HUMAN_RULE_ANNOTATION_PROTOCOL = 'idena-arc-hidden-rule-annotation-v0'
 const AI_SELF_ANNOTATION_PROTOCOL = 'idena-arc-ai-self-annotation-v0'
 const COMPARISON_ANNOTATION_PROTOCOL = 'idena-arc-comparison-annotation-v0'
+const LOCAL_AI_GAMEPLAY_ANNOTATION_PROTOCOL =
+  'idena-arc-local-ai-gameplay-annotation-v0'
+const HUMAN_REPLAY_ANNOTATION_PROTOCOL = 'idena-arc-human-replay-annotation-v0'
+const NOEMON_STYLE_ANNOTATION_PROTOCOL = 'idena-arc-noemon-style-annotation-v0'
+const ANNOTATION_VALIDATION_PROTOCOL = 'idena-arc-annotation-validation-v0'
+const FRAME_CONTEXT_PROTOCOL = 'idena-arc-compact-frame-context-v0'
 const TRAINING_EXAMPLE_PROTOCOL = 'idena-arc-training-example-v0'
 const TRAINING_DATASET_EXPORT_PROTOCOL = 'idena-arc-training-dataset-export-v0'
+const TEACHER_JOURNEY_PROTOCOL = 'idena-arc-teacher-journey-v1'
+const PRIVATE_SIGNING_FIELD_KEYS = new Set([
+  'nodeKey',
+  'nodeKeyHex',
+  'private_key',
+  'privateKey',
+  'privateKeyHex',
+  'signer_private_key',
+  'signerPrivateKey',
+  'signerPrivateKeyHex',
+])
 const DEFAULT_PLAY_DURATION_MS = 3 * 60 * 1000
 const DEFAULT_GRACE_PERIOD_MS = 30 * 1000
 const DEFAULT_GENERATOR_VERSION = '0.1.0'
 const MAX_ACTIONS = 512
+const ARC_AGI_RUNTIME_DIRNAME = 'arc-agi-runtime'
+const ARC_AGI_SETUP_TIMEOUT_MS = 20 * 60 * 1000
+const ARC_AGI_PYTHON_INSTALL_TIMEOUT_MS = 45 * 60 * 1000
+const ARC_AGI_PROBE_TIMEOUT_MS = 15 * 1000
 const DEFAULT_CAPABILITY_TAGS = [
   'spatial-planning',
   'color-rule-inference',
@@ -45,6 +65,7 @@ const DEFAULT_CAPABILITY_TAGS = [
 ]
 const IDENA_ARC_PROOF_CONTRACT_PLACEHOLDER = '<idena-arc-proof-contract>'
 const ARC_ACTION_ALIASES = {
+  reset: 'RESET',
   move_up: 'ACTION1',
   up: 'ACTION1',
   move_down: 'ACTION2',
@@ -58,9 +79,203 @@ const ARC_ACTION_ALIASES = {
   click: 'ACTION6',
   undo: 'ACTION7',
 }
+const ARC_ACTION_BUTTON_DESCRIPTIONS = {
+  ACTION1: {
+    action: 'ACTION1',
+    buttonLabel: 'Up',
+    keys: ['W', 'ArrowUp'],
+    description:
+      'Up button / ACTION1. Compare the observed frame change, not only the expected direction.',
+  },
+  ACTION2: {
+    action: 'ACTION2',
+    buttonLabel: 'Down',
+    keys: ['S', 'ArrowDown'],
+    description:
+      'Down button / ACTION2. Compare the observed frame change, not only the expected direction.',
+  },
+  ACTION3: {
+    action: 'ACTION3',
+    buttonLabel: 'Left',
+    keys: ['A', 'ArrowLeft'],
+    description:
+      'Left button / ACTION3. Compare the observed frame change, not only the expected direction.',
+  },
+  ACTION4: {
+    action: 'ACTION4',
+    buttonLabel: 'Right',
+    keys: ['D', 'ArrowRight'],
+    description:
+      'Right button / ACTION4. Compare the observed frame change, not only the expected direction.',
+  },
+  ACTION5: {
+    action: 'ACTION5',
+    buttonLabel: 'Action',
+    keys: ['Space', 'F', 'Enter'],
+    description:
+      'Primary action / ACTION5. Compare which object or rule it tested.',
+  },
+  ACTION6: {
+    action: 'ACTION6',
+    buttonLabel: 'Board click',
+    keys: ['Mouse', 'Touch'],
+    description:
+      'Coordinate action / ACTION6. Compare the clicked cell and resulting frame change.',
+  },
+  ACTION7: {
+    action: 'ACTION7',
+    buttonLabel: 'Undo',
+    keys: ['Ctrl+Z', 'Cmd+Z'],
+    description:
+      'Undo / ACTION7. Compare whether it corrected exploration or hid an error.',
+  },
+  RESET: {
+    action: 'RESET',
+    buttonLabel: 'Reset',
+    keys: ['R'],
+    description:
+      'Reset. Starts over and should be marked separately from a failed attempt.',
+  },
+}
 
 function isoNow() {
   return new Date().toISOString()
+}
+
+function commandParts(command) {
+  const parts = trimString(command).split(/\s+/u).filter(Boolean)
+
+  return {
+    command: parts[0] || '',
+    args: parts.slice(1),
+  }
+}
+
+function getVenvPythonPath(venvDir) {
+  return process.platform === 'win32'
+    ? path.join(venvDir, 'Scripts', 'python.exe')
+    : path.join(venvDir, 'bin', 'python')
+}
+
+function toAsarUnpackedPath(filePath) {
+  const asarSegment = `${path.sep}app.asar${path.sep}`
+
+  if (filePath.includes(asarSegment)) {
+    return filePath.replace(
+      asarSegment,
+      `${path.sep}app.asar.unpacked${path.sep}`
+    )
+  }
+
+  const asarSuffix = `${path.sep}app.asar`
+
+  return filePath.endsWith(asarSuffix) ? `${filePath}.unpacked` : filePath
+}
+
+function resolveExternalProcessCwd(rootDir) {
+  const unpackedRootDir = toAsarUnpackedPath(rootDir)
+
+  if (unpackedRootDir !== rootDir) {
+    return path.dirname(rootDir)
+  }
+
+  return rootDir
+}
+
+function resolveBundledPath(rootDir, ...segments) {
+  const bundledPath = path.join(rootDir, ...segments)
+  const unpackedPath = toAsarUnpackedPath(bundledPath)
+
+  if (unpackedPath !== bundledPath && fs.existsSync(unpackedPath)) {
+    return unpackedPath
+  }
+
+  return bundledPath
+}
+
+function outputTail(value, maxChars = 2400) {
+  const text = trimString(value)
+
+  return text.length > maxChars ? text.slice(text.length - maxChars) : text
+}
+
+function runCapturedCommand({
+  command,
+  args = [],
+  cwd = process.cwd(),
+  env = process.env,
+  timeoutMs = ARC_AGI_PROBE_TIMEOUT_MS,
+  label = 'command',
+  onOutput = null,
+}) {
+  return new Promise((resolve, reject) => {
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timedOut = false
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true
+            child.kill('SIGTERM')
+          }, timeoutMs)
+        : null
+
+    function settle(callback, value) {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      callback(value)
+    }
+
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString('utf8')
+      stdout += text
+      if (typeof onOutput === 'function') onOutput(text)
+    })
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString('utf8')
+      stderr += text
+      if (typeof onOutput === 'function') onOutput(text)
+    })
+    child.on('error', (error) => settle(reject, error))
+    child.on('close', (code, signal) => {
+      if (timedOut) {
+        settle(
+          reject,
+          new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)
+        )
+        return
+      }
+
+      settle(resolve, {
+        code,
+        signal,
+        stdout: outputTail(stdout),
+        stderr: outputTail(stderr),
+      })
+    })
+  })
+}
+
+async function runRequiredCommand(options) {
+  const result = await runCapturedCommand(options)
+
+  if (result.code !== 0) {
+    const details = outputTail(`${result.stderr}\n${result.stdout}`)
+    throw new Error(
+      `${options.label || 'Command'} failed with code ${result.code}${
+        details ? `: ${details}` : ''
+      }`
+    )
+  }
+
+  return result
 }
 
 function safeId(value, fallback) {
@@ -193,6 +408,122 @@ function normalizeRecognitionMoment(value, fallbackActionIndex = null) {
   }
 }
 
+function normalizeNoemonStyleExplanation(input = {}, context = {}) {
+  const source =
+    input && typeof input === 'object' && !Array.isArray(input)
+      ? input
+      : {ruleHypothesis: input}
+  const summary = boundedString(
+    source.summary || source.highLevelSummary || source.high_level_summary,
+    1200
+  )
+  const gridSize = boundedString(
+    source.gridSize || source.grid_size || source.outputSize,
+    600
+  )
+  const invariants = normalizeStringList(source.invariants, {
+    maxItems: 32,
+    maxLength: 400,
+  })
+  const ruleHypothesis = boundedString(
+    source.ruleHypothesis ||
+      source.rule_hypothesis ||
+      source.transformationRule ||
+      source.transformation_rule,
+    4000
+  )
+  const transformationAlgorithm = boundedString(
+    source.transformationAlgorithm ||
+      source.transformation_algorithm ||
+      source.algorithm,
+    4000
+  )
+  const actionPolicy = boundedString(
+    source.actionPolicy || source.action_policy || source.policy,
+    4000
+  )
+  const rejectedAlternatives = normalizeStringList(
+    source.rejectedAlternatives ||
+      source.rejected_alternatives ||
+      source.rejectedAlternative ||
+      source.rejected_alternative,
+    {maxItems: 32, maxLength: 700}
+  )
+  const evidenceEvents = normalizeEvidenceEvents(
+    source.evidenceEvents || source.evidence_events
+  )
+  const filledFieldCount = [
+    summary,
+    gridSize,
+    ruleHypothesis,
+    transformationAlgorithm,
+    actionPolicy,
+    invariants.length,
+    rejectedAlternatives.length,
+    evidenceEvents.length,
+  ].filter(Boolean).length
+
+  return {
+    protocol: NOEMON_STYLE_ANNOTATION_PROTOCOL,
+    role: boundedString(context.role || source.role, 80),
+    summary,
+    gridSize,
+    invariants,
+    ruleHypothesis,
+    transformationAlgorithm,
+    actionPolicy,
+    rejectedAlternatives,
+    evidenceEvents,
+    filledFieldCount,
+  }
+}
+
+function hasNoemonStyleSignal(value = {}) {
+  return Boolean(
+    value &&
+      (value.summary ||
+        value.gridSize ||
+        value.ruleHypothesis ||
+        value.transformationAlgorithm ||
+        value.actionPolicy ||
+        (Array.isArray(value.invariants) && value.invariants.length) ||
+        (Array.isArray(value.rejectedAlternatives) &&
+          value.rejectedAlternatives.length) ||
+        (Array.isArray(value.evidenceEvents) && value.evidenceEvents.length))
+  )
+}
+
+function noemonStyleExplanationToText(value = {}) {
+  if (!hasNoemonStyleSignal(value)) {
+    return ''
+  }
+
+  return [
+    value.summary ? `Summary: ${value.summary}` : '',
+    value.gridSize ? `Grid size: ${value.gridSize}` : '',
+    Array.isArray(value.invariants) && value.invariants.length
+      ? `Invariants: ${value.invariants.join('; ')}`
+      : '',
+    value.ruleHypothesis ? `Rule hypothesis: ${value.ruleHypothesis}` : '',
+    value.transformationAlgorithm
+      ? `Transformation algorithm: ${value.transformationAlgorithm}`
+      : '',
+    value.actionPolicy ? `Action policy: ${value.actionPolicy}` : '',
+    Array.isArray(value.rejectedAlternatives) &&
+    value.rejectedAlternatives.length
+      ? `Rejected alternatives: ${value.rejectedAlternatives.join('; ')}`
+      : '',
+    Array.isArray(value.evidenceEvents) && value.evidenceEvents.length
+      ? `Evidence: ${value.evidenceEvents
+          .map((item) => item.description)
+          .filter(Boolean)
+          .join('; ')}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 function normalizeHumanRuleAnnotation(input = {}, context = {}) {
   const capabilityTags = normalizeCapabilityTags(
     input.capabilityTags || input.capability_tags
@@ -264,6 +595,179 @@ function normalizeAiSelfAnnotation(input = {}, context = {}) {
   }
 }
 
+function compressExplanationText(explanationText, {maxChars = 900} = {}) {
+  const normalized = boundedString(explanationText, 12000)
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalized) {
+    return {
+      protocol: 'idena-arc-explanation-compression-v0',
+      status: 'empty',
+      strategy: 'deterministic-extractive-v0',
+      sourceFormat: 'plain-text-v0',
+      sourceTextHash: null,
+      sourceCharCount: 0,
+      compressedText: '',
+      compressedTextHash: null,
+      compressedCharCount: 0,
+      lossy: false,
+      needsBetterCompressor: false,
+    }
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/u)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const selected = []
+  let length = 0
+
+  for (const sentence of sentences.length ? sentences : [normalized]) {
+    const separatorLength = selected.length ? 1 : 0
+    if (length + separatorLength + sentence.length > maxChars) {
+      break
+    }
+    selected.push(sentence)
+    length += separatorLength + sentence.length
+  }
+
+  let compressedText = selected.join(' ')
+  if (!compressedText) {
+    compressedText = normalized.slice(0, maxChars)
+  }
+
+  const lossy = compressedText.length < normalized.length
+
+  return {
+    protocol: 'idena-arc-explanation-compression-v0',
+    status: 'compressed',
+    strategy: 'deterministic-extractive-v0',
+    sourceFormat: 'plain-text-v0',
+    sourceTextHash: sha256Prefixed(normalized),
+    sourceCharCount: normalized.length,
+    compressedText,
+    compressedTextHash: sha256Prefixed(compressedText),
+    compressedCharCount: compressedText.length,
+    lossy,
+    needsBetterCompressor: lossy,
+  }
+}
+
+function buildCompressionMetadata(explanationText) {
+  const compressed = compressExplanationText(explanationText)
+
+  return {
+    ...compressed,
+    futureStrategy: 'replace-with-model-summary-plus-evidence-pointers',
+  }
+}
+
+function normalizeLocalAiGameplayAnnotation(input = {}, context = {}) {
+  const explanationText = boundedString(
+    input.explanationText || input.explanation || input.notes,
+    12000
+  )
+  const attemptedActions = normalizeActions(
+    input.attemptedActions || input.actionTrace || input.actions || []
+  )
+  const structuredExplanation = normalizeNoemonStyleExplanation(
+    input.structuredExplanation ||
+      input.noemonStyle ||
+      input.noemon_style ||
+      input.noemon ||
+      {},
+    {...context, role: 'local-ai-gameplay'}
+  )
+  const structuredExplanationText = noemonStyleExplanationToText(
+    structuredExplanation
+  )
+
+  return {
+    protocol: LOCAL_AI_GAMEPLAY_ANNOTATION_PROTOCOL,
+    status: context.status,
+    sessionId: context.sessionId,
+    gameId: context.sessionId,
+    resultId: context.resultId,
+    participantId: context.participantId,
+    model: boundedString(
+      input.model || input.localModel || input.local_model,
+      160
+    ),
+    provider: boundedString(input.provider || 'local-ai', 120),
+    mode: boundedString(input.mode || 'gameplay', 80),
+    attemptedActions,
+    actionButtonDescriptions: normalizeActionButtonDescriptions(
+      input.actionButtonDescriptions || input.buttonDescriptions,
+      attemptedActions
+    ),
+    explanationText,
+    actionRationales: normalizeEvidenceEvents(
+      input.actionRationales || input.action_rationales
+    ),
+    uncertaintyNotes: boundedString(
+      input.uncertaintyNotes || input.uncertainty_notes,
+      4000
+    ),
+    memoryNotes: boundedString(input.memoryNotes || input.memory_notes, 4000),
+    compression: buildCompressionMetadata(explanationText),
+    structuredExplanation,
+    structuredCompression: buildCompressionMetadata(structuredExplanationText),
+  }
+}
+
+function normalizeHumanReplayAnnotation(input = {}, context = {}) {
+  const explanationText = boundedString(
+    input.explanationText || input.explanation || input.notes,
+    12000
+  )
+  const replayActions = normalizeActions(
+    input.replayActions ||
+      input.actionTrace ||
+      input.actions ||
+      context.replayActions ||
+      []
+  )
+  const structuredExplanation = normalizeNoemonStyleExplanation(
+    input.structuredExplanation ||
+      input.noemonStyle ||
+      input.noemon_style ||
+      input.noemon ||
+      {},
+    {...context, role: 'human-replay'}
+  )
+  const structuredExplanationText = noemonStyleExplanationToText(
+    structuredExplanation
+  )
+
+  return {
+    protocol: HUMAN_REPLAY_ANNOTATION_PROTOCOL,
+    status: context.status,
+    sessionId: context.sessionId,
+    gameId: context.sessionId,
+    resultId: context.resultId,
+    participantId: context.participantId,
+    replayActions,
+    actionButtonDescriptions: normalizeActionButtonDescriptions(
+      input.actionButtonDescriptions || input.buttonDescriptions,
+      replayActions
+    ),
+    explanationText,
+    keyMoments: normalizeEvidenceEvents(input.keyMoments || input.key_moments),
+    corrections: normalizeStringList(input.corrections, {
+      maxItems: 64,
+      maxLength: 800,
+    }),
+    betterActionPlan: boundedString(
+      input.betterActionPlan || input.better_action_plan,
+      4000
+    ),
+    compression: buildCompressionMetadata(explanationText),
+    structuredExplanation,
+    structuredCompression: buildCompressionMetadata(structuredExplanationText),
+  }
+}
+
 function normalizeComparisonAnnotation(input = {}, context = {}) {
   return {
     protocol: COMPARISON_ANNOTATION_PROTOCOL,
@@ -283,6 +787,227 @@ function normalizeComparisonAnnotation(input = {}, context = {}) {
       input.suggestedAdapterTarget || input.suggested_adapter_target,
       400
     ),
+    actionButtonComparison: normalizeActionButtonComparison(
+      input.actionButtonComparison || input.action_button_comparison || {}
+    ),
+  }
+}
+
+function normalizeJourneyActions(actions) {
+  return (Array.isArray(actions) ? actions : [])
+    .slice(0, MAX_ACTIONS)
+    .map((item, index) => {
+      const normalized = normalizeAction(item)
+
+      if (!normalized) return null
+
+      const next = {
+        index: Math.max(
+          0,
+          Math.trunc(
+            Number(typeof item.index !== 'undefined' ? item.index : index) ||
+              index
+          )
+        ),
+        ...normalized,
+        arcAction:
+          boundedString(
+            item.arcAction || arcActionName(normalized.action),
+            80
+          ) || null,
+        stateHash: boundedString(item.stateHash, 160) || null,
+        reason: boundedString(item.reason || item.rationale, 1000),
+        observation: boundedString(item.observation, 1000),
+      }
+
+      if (typeof item.score === 'number' && Number.isFinite(item.score)) {
+        next.score = item.score
+      }
+      if (
+        typeof item.confidence === 'number' &&
+        Number.isFinite(item.confidence)
+      ) {
+        next.confidence = Math.max(0, Math.min(1, item.confidence))
+      }
+
+      return next
+    })
+    .filter(Boolean)
+}
+
+function normalizeAttemptForTeacherJourney(input = {}, fallbackActor = '') {
+  if (!input || typeof input !== 'object') return null
+
+  const actions = normalizeJourneyActions(input.actions)
+  const finalState =
+    input.finalState && typeof input.finalState === 'object'
+      ? JSON.parse(JSON.stringify(input.finalState))
+      : null
+
+  return {
+    protocol: 'idena-arc-attempt-v1',
+    actor: boundedString(input.actor || fallbackActor, 80),
+    attemptIndex: Math.max(0, Math.trunc(Number(input.attemptIndex || 0) || 0)),
+    startedAt: boundedString(input.startedAt, 80),
+    endedAt: boundedString(input.endedAt, 80),
+    actionCount: actions.length,
+    actions,
+    replayTimeline: Array.isArray(input.replayTimeline)
+      ? input.replayTimeline.slice(0, MAX_ACTIONS + 1)
+      : [],
+    finalState,
+    finalStateHash: boundedString(input.finalStateHash, 160) || null,
+    completed: Boolean(input.completed),
+    gameOver: Boolean(input.gameOver),
+    stopReason: boundedString(input.stopReason, 240),
+    model: boundedString(input.model, 160),
+    runtime: boundedString(input.runtime, 160),
+    notes: boundedString(input.notes, 2000),
+  }
+}
+
+function normalizeCompressedTeacherMemory(input = {}) {
+  if (!input || typeof input !== 'object') return null
+
+  const compressedText = boundedString(input.compressedText || input.text, 4000)
+  if (!compressedText) return null
+
+  return {
+    protocol: 'idena-arc-teacher-memory-v1',
+    createdAt: boundedString(input.createdAt, 80) || isoNow(),
+    sourceTextHash:
+      boundedString(input.sourceTextHash, 160) ||
+      sha256Prefixed(input.sourceText || compressedText),
+    compressedText,
+    compressedTextHash: sha256Prefixed(compressedText),
+    compression:
+      input.compression && typeof input.compression === 'object'
+        ? {
+            method: boundedString(input.compression.method, 120),
+            maxChars: Number(input.compression.maxChars) || null,
+          }
+        : {method: 'main-normalize', maxChars: compressedText.length},
+  }
+}
+
+function normalizeTeacherRounds(rounds) {
+  return (Array.isArray(rounds) ? rounds : [])
+    .slice(0, 32)
+    .map((round, index) => ({
+      protocol: 'idena-arc-teacher-round-v1',
+      roundIndex: Math.max(
+        0,
+        Math.trunc(
+          Number(
+            typeof round.roundIndex !== 'undefined' ? round.roundIndex : index
+          ) || index
+        )
+      ),
+      createdAt: boundedString(round.createdAt, 80) || isoNow(),
+      humanAttemptHash: boundedString(round.humanAttemptHash, 160) || null,
+      localAiAttemptHash: boundedString(round.localAiAttemptHash, 160) || null,
+      aiComparison: boundedString(round.aiComparison, 6000),
+      humanFeedback: boundedString(round.humanFeedback, 6000),
+      quickMarks: normalizeStringList(round.quickMarks, {
+        maxItems: 24,
+        maxLength: 80,
+      }),
+      compressedMemory: normalizeCompressedTeacherMemory(
+        round.compressedMemory || {}
+      ),
+      retryAttemptIndex: Number.isFinite(Number(round.retryAttemptIndex))
+        ? Math.max(0, Math.trunc(Number(round.retryAttemptIndex)))
+        : null,
+    }))
+}
+
+function normalizeProviderAnnotationDrafts(drafts) {
+  return (Array.isArray(drafts) ? drafts : []).slice(0, 16).map((draft) => ({
+    protocol: 'idena-arc-provider-annotation-draft-v1',
+    createdAt: boundedString(draft.createdAt, 80) || isoNow(),
+    provider: boundedString(draft.provider, 120),
+    model: boundedString(draft.model, 160),
+    costUsd:
+      typeof draft.costUsd === 'number' && Number.isFinite(draft.costUsd)
+        ? Math.max(0, draft.costUsd)
+        : null,
+    reviewedByHuman: Boolean(draft.reviewedByHuman),
+    excludedFromTraining:
+      draft.excludedFromTraining === false ? !draft.reviewedByHuman : true,
+    text: boundedString(draft.text || draft.content, 8000),
+    provenanceHash:
+      boundedString(draft.provenanceHash, 160) ||
+      sha256Prefixed(
+        `${draft.provider || ''}:${draft.model || ''}:${draft.text || ''}`
+      ),
+  }))
+}
+
+function normalizeTeacherJourney(input = {}, context = {}) {
+  if (!input || typeof input !== 'object') return null
+
+  const humanAttempt = normalizeAttemptForTeacherJourney(
+    input.humanAttempt,
+    'human'
+  )
+  const localAiAttempts = (
+    Array.isArray(input.localAiAttempts) ? input.localAiAttempts : []
+  )
+    .map((attempt) => normalizeAttemptForTeacherJourney(attempt, 'local-ai'))
+    .filter(Boolean)
+    .slice(0, 16)
+
+  if (!humanAttempt && !localAiAttempts.length) {
+    return null
+  }
+
+  return {
+    protocol: TEACHER_JOURNEY_PROTOCOL,
+    version: 1,
+    status: context.status,
+    phase: boundedString(input.phase, 80),
+    createdAt: boundedString(input.createdAt, 80) || isoNow(),
+    updatedAt: boundedString(input.updatedAt, 80) || isoNow(),
+    game:
+      input.game && typeof input.game === 'object'
+        ? {
+            gameId: boundedString(input.game.gameId, 160),
+            title: boundedString(input.game.title, 240),
+            initialStateHash:
+              boundedString(input.game.initialStateHash, 160) || null,
+            goalStateHash: boundedString(input.game.goalStateHash, 160) || null,
+            renderer: boundedString(input.game.renderer, 120),
+          }
+        : {},
+    humanAttempt,
+    localAiAttempts,
+    teacherRounds: normalizeTeacherRounds(input.teacherRounds),
+    providerAnnotationDrafts: normalizeProviderAnnotationDrafts(
+      input.providerAnnotationDrafts
+    ),
+    compressedTeacherMemory: normalizeCompressedTeacherMemory(
+      input.compressedTeacherMemory || {}
+    ),
+  }
+}
+
+function compressTeacherFeedbackText(text) {
+  const source = boundedString(text, 12000)
+  if (!source) return null
+
+  const compressed = compressExplanationText(source, {maxChars: 1800})
+
+  return {
+    protocol: 'idena-arc-teacher-memory-v1',
+    createdAt: isoNow(),
+    sourceTextHash: compressed.sourceTextHash,
+    compressedText: compressed.compressedText,
+    compressedTextHash: compressed.compressedTextHash,
+    compression: {
+      method: compressed.strategy,
+      maxChars: 1800,
+      lossy: compressed.lossy,
+    },
   }
 }
 
@@ -294,24 +1019,373 @@ function collectCapabilityTags(...sources) {
   return Array.from(new Set(tags)).slice(0, 16)
 }
 
+function normalizeFrameRows(frame) {
+  return (Array.isArray(frame) ? frame : [])
+    .filter((row) => Array.isArray(row))
+    .slice(0, 128)
+    .map((row) =>
+      row
+        .slice(0, 128)
+        .map((cell) =>
+          typeof cell === 'number' || typeof cell === 'string'
+            ? cell
+            : String(cell || '')
+        )
+    )
+}
+
+function summarizeFrame(frame) {
+  const rows = normalizeFrameRows(frame)
+  const width = Math.max(
+    0,
+    ...rows.map((row) => (Array.isArray(row) ? row.length : 0))
+  )
+  const colorCounts = new Map()
+
+  rows.forEach((row) => {
+    row.forEach((cell) => {
+      const key = String(cell)
+      colorCounts.set(key, (colorCounts.get(key) || 0) + 1)
+    })
+  })
+
+  const sortedColorCounts = Array.from(colorCounts.entries())
+    .sort((left, right) => {
+      if (right[1] !== left[1]) return right[1] - left[1]
+      return left[0].localeCompare(right[0])
+    })
+    .slice(0, 24)
+    .reduce((acc, [key, count]) => {
+      acc[key] = count
+      return acc
+    }, {})
+
+  return {
+    width,
+    height: rows.length,
+    cellCount: rows.reduce((total, row) => total + row.length, 0),
+    symbols: Object.keys(sortedColorCounts),
+    colorCounts: sortedColorCounts,
+    frameHash: rows.length ? hashJsonPrefixed(rows) : null,
+  }
+}
+
+function recordingActionData(entry = {}) {
+  const data = entry && entry.data ? entry.data : {}
+  const actionInput = data.action_input || null
+  return actionInput && actionInput.data ? actionInput.data : {}
+}
+
+function summarizeRecordingEntry(entry = {}, index = 0) {
+  const data = entry && entry.data ? entry.data : {}
+  const actionData = recordingActionData(entry)
+
+  return {
+    index,
+    timestamp: entry.timestamp || '',
+    phase: data.full_reset ? 'initial' : 'action',
+    t_ms: Number(actionData.t_ms || 0) || 0,
+    action: actionData.action || (data.full_reset ? 'RESET' : ''),
+    arcAction: actionData.arc_action || arcActionName(actionData.action) || '',
+    x: typeof actionData.x === 'number' ? actionData.x : null,
+    y: typeof actionData.y === 'number' ? actionData.y : null,
+    score: typeof data.score === 'number' ? data.score : null,
+    levelsCompleted:
+      typeof data.levels_completed === 'number' ? data.levels_completed : null,
+    winLevels: typeof data.win_levels === 'number' ? data.win_levels : null,
+    availableActions: Array.isArray(data.available_actions)
+      ? data.available_actions.slice(0, 16)
+      : [],
+    stateHash: data.state_hash || null,
+    frame: summarizeFrame(data.frame),
+  }
+}
+
+function buildCompactFrameContext(bundle = {}) {
+  const recording = bundle.recording || {}
+  const entries = Array.isArray(recording.entries) ? recording.entries : []
+  const actionTrace = entries
+    .map((entry, index) => summarizeRecordingEntry(entry, index))
+    .filter((entry) => entry.phase === 'action')
+    .slice(0, MAX_ACTIONS)
+    .map((entry) => ({
+      index: entry.index,
+      t_ms: entry.t_ms,
+      action: entry.action,
+      arcAction: entry.arcAction,
+      x: entry.x,
+      y: entry.y,
+      score: entry.score,
+      levelsCompleted: entry.levelsCompleted,
+      stateHash: entry.stateHash,
+    }))
+  const milestoneIndices = new Set()
+  let previousScore = null
+  let previousLevelsCompleted = null
+
+  if (entries.length) {
+    milestoneIndices.add(0)
+    milestoneIndices.add(entries.length - 1)
+  }
+
+  entries.forEach((entry, index) => {
+    const data = entry && entry.data ? entry.data : {}
+    const score = typeof data.score === 'number' ? data.score : null
+    const levelsCompleted =
+      typeof data.levels_completed === 'number' ? data.levels_completed : null
+
+    if (score !== null && score !== previousScore) {
+      milestoneIndices.add(index)
+      previousScore = score
+    }
+    if (
+      levelsCompleted !== null &&
+      levelsCompleted !== previousLevelsCompleted
+    ) {
+      milestoneIndices.add(index)
+      previousLevelsCompleted = levelsCompleted
+    }
+  })
+
+  const milestones = Array.from(milestoneIndices)
+    .sort((left, right) => left - right)
+    .slice(0, 24)
+    .map((index) => summarizeRecordingEntry(entries[index], index))
+
+  return {
+    protocol: FRAME_CONTEXT_PROTOCOL,
+    source: 'recording-jsonl-v0',
+    gameId: recording.gameId || '',
+    entryCount: entries.length,
+    actionCount: actionTrace.length,
+    initial: entries.length ? summarizeRecordingEntry(entries[0], 0) : null,
+    final: entries.length
+      ? summarizeRecordingEntry(entries[entries.length - 1], entries.length - 1)
+      : null,
+    milestones,
+    actionTrace,
+  }
+}
+
+function actionHintsFromText(...values) {
+  const text = values
+    .flatMap((value) => {
+      if (Array.isArray(value)) return value
+      if (value && typeof value === 'object') {
+        return Object.values(value)
+      }
+      return value
+    })
+    .join('\n')
+  const hints = []
+  const addHint = (value) => {
+    const normalized = arcActionName(value) || String(value || '').toUpperCase()
+    if (/^ACTION[1-7]$/.test(normalized) && !hints.includes(normalized)) {
+      hints.push(normalized)
+    }
+  }
+  const explicitActionPattern = /\bACTION\s*([1-7])\b/giu
+  let match = explicitActionPattern.exec(text)
+  while (match) {
+    addHint(`ACTION${match[1]}`)
+    match = explicitActionPattern.exec(text)
+  }
+
+  ;[
+    'move_up',
+    'move_down',
+    'move_left',
+    'move_right',
+    'up',
+    'down',
+    'left',
+    'right',
+    'interact',
+    'select',
+    'click',
+    'undo',
+  ].forEach((alias) => {
+    const pattern = new RegExp(`\\b${alias.replace('_', '[_ -]?')}\\b`, 'iu')
+    if (pattern.test(text)) addHint(alias)
+  })
+
+  return hints.slice(0, 16)
+}
+
+function buildAnnotationValidationRecord(annotationPayload = {}, bundle = {}) {
+  const trace = bundle.trace || {}
+  const frameContext =
+    annotationPayload.frameContext || buildCompactFrameContext(bundle)
+  const traceActions = (
+    Array.isArray(trace.actions)
+      ? trace.actions
+      : frameContext.actionTrace || []
+  )
+    .map((item) => arcActionName(item.action) || item.arcAction || item.action)
+    .filter(Boolean)
+  const localAi = annotationPayload.localAiGameplayAnnotation || {}
+  const humanReplay = annotationPayload.humanReplayAnnotation || {}
+  const humanRule = annotationPayload.humanRuleAnnotation || {}
+  const localStructured = localAi.structuredExplanation || {}
+  const replayStructured = humanReplay.structuredExplanation || {}
+  const textFields = [
+    localAi.explanationText,
+    localAi.uncertaintyNotes,
+    noemonStyleExplanationToText(localStructured),
+    humanReplay.explanationText,
+    humanReplay.betterActionPlan,
+    noemonStyleExplanationToText(replayStructured),
+    humanRule.strategyChange,
+    humanRule.teachingNotes,
+  ]
+  const predictedNextActions = actionHintsFromText(textFields)
+  const expectedFinalAction = traceActions.length
+    ? traceActions[traceActions.length - 1]
+    : null
+  const allEvidence = [
+    ...(Array.isArray(humanRule.evidenceEvents)
+      ? humanRule.evidenceEvents
+      : []),
+    ...(Array.isArray(humanReplay.keyMoments) ? humanReplay.keyMoments : []),
+    ...(Array.isArray(localAi.actionRationales)
+      ? localAi.actionRationales
+      : []),
+    ...(Array.isArray(localStructured.evidenceEvents)
+      ? localStructured.evidenceEvents
+      : []),
+    ...(Array.isArray(replayStructured.evidenceEvents)
+      ? replayStructured.evidenceEvents
+      : []),
+  ]
+  const referencedEvidence = allEvidence.filter((item) =>
+    Number.isInteger(item && item.actionIndex)
+  )
+  const validEvidenceRefs = referencedEvidence.filter(
+    (item) => item.actionIndex >= 0 && item.actionIndex <= traceActions.length
+  )
+  const checks = [
+    {
+      id: 'human-replay-explanation',
+      passed: Boolean(
+        humanReplay.explanationText || hasNoemonStyleSignal(replayStructured)
+      ),
+    },
+    {
+      id: 'local-ai-gameplay-explanation',
+      passed: Boolean(
+        localAi.explanationText || hasNoemonStyleSignal(localStructured)
+      ),
+    },
+    {
+      id: 'structured-action-policy',
+      passed: Boolean(
+        localStructured.actionPolicy || replayStructured.actionPolicy
+      ),
+    },
+    {
+      id: 'evidence-linked-to-replay',
+      passed:
+        referencedEvidence.length === 0 ||
+        validEvidenceRefs.length === referencedEvidence.length,
+    },
+    {
+      id: 'action-hints-observed-in-trace',
+      passed:
+        predictedNextActions.length === 0 ||
+        predictedNextActions.some((action) => traceActions.includes(action)),
+    },
+  ]
+  const passedChecks = checks.filter((check) => check.passed).length
+  const readinessScore =
+    checks.length > 0 ? Number((passedChecks / checks.length).toFixed(3)) : 0
+  const feedback = []
+
+  if (!checks[0].passed) {
+    feedback.push('Add a human replay explanation or structured replay rule.')
+  }
+  if (!checks[1].passed) {
+    feedback.push('Add local-AI gameplay notes or a structured local policy.')
+  }
+  if (!checks[2].passed) {
+    feedback.push('Add an action policy that can be tested on replay prefixes.')
+  }
+  if (!checks[3].passed) {
+    feedback.push('Some evidence action indexes are outside the trace.')
+  }
+  if (!checks[4].passed) {
+    feedback.push('Action hints in the explanation do not appear in the trace.')
+  }
+
+  return {
+    protocol: ANNOTATION_VALIDATION_PROTOCOL,
+    strategy: 'deterministic-noemon-style-validator-v0',
+    status:
+      readinessScore >= 0.8 && traceActions.length > 0
+        ? 'usable-for-training'
+        : 'needs-more-annotation',
+    readinessScore,
+    checks,
+    feedback,
+    replayPrefixTask: {
+      kind: 'predict-final-action-from-annotation-v0',
+      prefixActionCount: Math.max(0, traceActions.length - 1),
+      expectedFinalAction,
+      predictedNextActions,
+      matchedExpected:
+        expectedFinalAction !== null
+          ? predictedNextActions.includes(expectedFinalAction)
+          : null,
+    },
+  }
+}
+
 function hasAnnotationTrainingSignal(annotationPayload) {
   const human = annotationPayload.humanRuleAnnotation || {}
   const ai = annotationPayload.aiSelfAnnotation || {}
+  const localAiGameplay = annotationPayload.localAiGameplayAnnotation || {}
+  const humanReplay = annotationPayload.humanReplayAnnotation || {}
+  const teacherJourney = annotationPayload.teacherJourney || {}
+  const compressedTeacherMemory =
+    annotationPayload.compressedTeacherMemory ||
+    teacherJourney.compressedTeacherMemory ||
+    null
 
   return Boolean(
     (Array.isArray(human.confirmedRules) && human.confirmedRules.length) ||
       (Array.isArray(human.wrongHypotheses) && human.wrongHypotheses.length) ||
-      (Array.isArray(ai.failedAbstractions) && ai.failedAbstractions.length)
+      (Array.isArray(ai.failedAbstractions) && ai.failedAbstractions.length) ||
+      localAiGameplay.explanationText ||
+      humanReplay.explanationText ||
+      (compressedTeacherMemory && compressedTeacherMemory.compressedText) ||
+      (Array.isArray(teacherJourney.localAiAttempts) &&
+        teacherJourney.localAiAttempts.length) ||
+      hasNoemonStyleSignal(localAiGameplay.structuredExplanation) ||
+      hasNoemonStyleSignal(humanReplay.structuredExplanation)
   )
 }
 
 function buildTrainingExample(annotationPayload, annotationHash, bundle) {
   const human = annotationPayload.humanRuleAnnotation || {}
   const ai = annotationPayload.aiSelfAnnotation || {}
+  const localAiGameplay = annotationPayload.localAiGameplayAnnotation || {}
+  const humanReplay = annotationPayload.humanReplayAnnotation || {}
   const comparison = annotationPayload.comparisonAnnotation || {}
+  const teacherJourney = annotationPayload.teacherJourney || null
+  const compressedTeacherMemory =
+    annotationPayload.compressedTeacherMemory ||
+    (teacherJourney && teacherJourney.compressedTeacherMemory) ||
+    null
+  const reviewedProviderDrafts = (
+    annotationPayload.providerAnnotationDrafts || []
+  ).filter((draft) => draft && draft.reviewedByHuman)
   const trace = bundle.trace || {}
   const result = bundle.result || {}
   const capabilityTags = collectCapabilityTags(human, comparison)
+  const frameContext =
+    annotationPayload.frameContext || buildCompactFrameContext(bundle)
+  const annotationValidation =
+    annotationPayload.annotationValidation ||
+    buildAnnotationValidationRecord(annotationPayload, bundle)
 
   return {
     protocol: TRAINING_EXAMPLE_PROTOCOL,
@@ -334,6 +1408,17 @@ function buildTrainingExample(annotationPayload, annotationHash, bundle) {
       score: typeof result.score === 'number' ? result.score : null,
       actionCount: Array.isArray(trace.actions) ? trace.actions.length : 0,
       replayVerified: true,
+      annotationReadinessScore:
+        typeof annotationValidation.readinessScore === 'number'
+          ? annotationValidation.readinessScore
+          : null,
+    },
+    input: {
+      frameContext,
+      actionButtonComparison: comparison.actionButtonComparison || null,
+      replayPrefixTasks: annotationValidation.replayPrefixTask
+        ? [annotationValidation.replayPrefixTask]
+        : [],
     },
     target: {
       confirmedRules: human.confirmedRules || [],
@@ -344,8 +1429,74 @@ function buildTrainingExample(annotationPayload, annotationHash, bundle) {
       aiFailedAbstractions: ai.failedAbstractions || [],
       aiStopReason: ai.stopReason || '',
       missingCapability: ai.missingCapability || '',
+      localAiGameplayExplanation:
+        localAiGameplay.compression &&
+        localAiGameplay.compression.compressedText
+          ? localAiGameplay.compression.compressedText
+          : '',
+      localAiGameplayExplanationHash:
+        localAiGameplay.compression &&
+        localAiGameplay.compression.sourceTextHash
+          ? localAiGameplay.compression.sourceTextHash
+          : null,
+      localAiAttemptedActions: localAiGameplay.attemptedActions || [],
+      localAiActionButtonDescriptions:
+        localAiGameplay.actionButtonDescriptions || [],
+      localAiActionRationales: localAiGameplay.actionRationales || [],
+      localAiGameplayCompression: localAiGameplay.compression || null,
+      localAiStructuredExplanation:
+        localAiGameplay.structuredExplanation || null,
+      localAiStructuredCompression:
+        localAiGameplay.structuredCompression || null,
+      humanReplayExplanation:
+        humanReplay.compression && humanReplay.compression.compressedText
+          ? humanReplay.compression.compressedText
+          : '',
+      humanReplayExplanationHash:
+        humanReplay.compression && humanReplay.compression.sourceTextHash
+          ? humanReplay.compression.sourceTextHash
+          : null,
+      humanReplayKeyMoments: humanReplay.keyMoments || [],
+      humanReplayActions: humanReplay.replayActions || [],
+      humanReplayActionButtonDescriptions:
+        humanReplay.actionButtonDescriptions || [],
+      humanReplayCorrections: humanReplay.corrections || [],
+      humanReplayCompression: humanReplay.compression || null,
+      humanReplayStructuredExplanation:
+        humanReplay.structuredExplanation || null,
+      humanReplayStructuredCompression:
+        humanReplay.structuredCompression || null,
+      noemonStyle: {
+        protocol: NOEMON_STYLE_ANNOTATION_PROTOCOL,
+        localAiGameplay: {
+          structuredExplanation: localAiGameplay.structuredExplanation || null,
+          compressedText:
+            localAiGameplay.structuredCompression &&
+            localAiGameplay.structuredCompression.compressedText
+              ? localAiGameplay.structuredCompression.compressedText
+              : '',
+        },
+        humanReplay: {
+          structuredExplanation: humanReplay.structuredExplanation || null,
+          compressedText:
+            humanReplay.structuredCompression &&
+            humanReplay.structuredCompression.compressedText
+              ? humanReplay.structuredCompression.compressedText
+              : '',
+        },
+      },
+      annotationValidation,
       humanVsAiGap: comparison.humanVsAiGap || '',
       suggestedAdapterTarget: comparison.suggestedAdapterTarget || '',
+      teacherJourney,
+      compressedTeacherMemory,
+      teacherRounds:
+        teacherJourney && Array.isArray(teacherJourney.teacherRounds)
+          ? teacherJourney.teacherRounds
+          : [],
+      providerAnnotationDrafts: reviewedProviderDrafts,
+      providerDraftPolicy:
+        'Provider drafts are excluded unless reviewedByHuman=true.',
     },
   }
 }
@@ -502,7 +1653,7 @@ function arcActionName(action) {
     .trim()
     .toUpperCase()
 
-  if (/^ACTION[1-7]$/.test(normalized)) {
+  if (normalized === 'RESET' || /^ACTION[1-7]$/.test(normalized)) {
     return normalized
   }
 
@@ -515,6 +1666,149 @@ function arcActionName(action) {
   )
 }
 
+function containsPrivateSigningField(value, depth = 0) {
+  if (depth > 12 || value == null || typeof value !== 'object') {
+    return false
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => containsPrivateSigningField(item, depth + 1))
+  }
+
+  return Object.entries(value).some(([key, item]) => {
+    if (PRIVATE_SIGNING_FIELD_KEYS.has(key)) {
+      return true
+    }
+
+    return containsPrivateSigningField(item, depth + 1)
+  })
+}
+
+function actionButtonDescriptionForAction(action) {
+  const normalized = arcActionName(action) || String(action || '').trim()
+  const base = ARC_ACTION_BUTTON_DESCRIPTIONS[normalized]
+
+  if (base) {
+    return {
+      protocol: 'idena-arc-action-button-description-v0',
+      ...base,
+    }
+  }
+
+  return {
+    protocol: 'idena-arc-action-button-description-v0',
+    action: normalized || 'ACTION',
+    buttonLabel: normalized || 'Action',
+    keys: [],
+    description: `${
+      normalized || 'Action'
+    } button. Compare the observed frame change.`,
+  }
+}
+
+function normalizeActionButtonDescription(input) {
+  if (typeof input === 'string') {
+    return actionButtonDescriptionForAction(input)
+  }
+
+  const suppliedAction = input && (input.action || input.arcAction || input.id)
+  const action =
+    arcActionName(suppliedAction) ||
+    String(suppliedAction || '')
+      .trim()
+      .slice(0, 80)
+
+  return actionButtonDescriptionForAction(action)
+}
+
+function buildUsedActionButtonDescriptions(actions) {
+  const seen = new Set()
+  const result = []
+
+  normalizeActions(actions).forEach((item) => {
+    const descriptor = actionButtonDescriptionForAction(item.action)
+
+    if (!descriptor.action || seen.has(descriptor.action)) return
+    seen.add(descriptor.action)
+    result.push(descriptor)
+  })
+
+  return result
+}
+
+function normalizeActionButtonDescriptions(input, fallbackActions = []) {
+  const seen = new Set()
+  const result = (Array.isArray(input) ? input : [])
+    .map(normalizeActionButtonDescription)
+    .filter((item) => {
+      if (!item.action || seen.has(item.action)) return false
+      seen.add(item.action)
+      return true
+    })
+    .slice(0, 16)
+
+  return result.length
+    ? result
+    : buildUsedActionButtonDescriptions(fallbackActions)
+}
+
+function normalizeActionButtonComparison(input = {}) {
+  const buttons = normalizeActionButtonDescriptions(input.buttons || [])
+
+  return {
+    protocol: 'idena-arc-action-button-comparison-v0',
+    rule:
+      boundedString(input.rule, 320) ||
+      'Human and AI action annotations use the same ACTION button descriptions before comparing outcomes.',
+    buttons: buttons.map((item) => {
+      const source = (Array.isArray(input.buttons) ? input.buttons : []).find(
+        (candidate) =>
+          candidate &&
+          (arcActionName(candidate.action || candidate.arcAction) ||
+            candidate.action) === item.action
+      )
+      const usedBy = source && source.usedBy ? source.usedBy : {}
+
+      return {
+        ...item,
+        usedBy: {
+          human: Boolean(usedBy.human),
+          localAi: Boolean(usedBy.localAi),
+        },
+      }
+    }),
+  }
+}
+
+function buildActionButtonComparisonFromDescriptions(
+  humanDescriptions = [],
+  localAiDescriptions = []
+) {
+  const humanButtons = normalizeActionButtonDescriptions(humanDescriptions)
+  const localAiButtons = normalizeActionButtonDescriptions(localAiDescriptions)
+  const byAction = new Map()
+
+  humanButtons.concat(localAiButtons).forEach((item) => {
+    if (!byAction.has(item.action)) byAction.set(item.action, item)
+  })
+
+  return {
+    protocol: 'idena-arc-action-button-comparison-v0',
+    rule: 'Human and AI action annotations use the same ACTION button descriptions before comparing outcomes.',
+    buttons: Array.from(byAction.values())
+      .sort((left, right) => left.action.localeCompare(right.action))
+      .map((item) => ({
+        ...item,
+        usedBy: {
+          human: humanButtons.some((button) => button.action === item.action),
+          localAi: localAiButtons.some(
+            (button) => button.action === item.action
+          ),
+        },
+      })),
+  }
+}
+
 function timestampFromOffset(baseIso, offsetMs) {
   const baseMs = Date.parse(baseIso || '')
   const startMs = Number.isFinite(baseMs) ? baseMs : 0
@@ -523,6 +1817,10 @@ function timestampFromOffset(baseIso, offsetMs) {
 }
 
 function gridFrameFromState(state = {}) {
+  if (Array.isArray(state.frame)) {
+    return state.frame
+  }
+
   const gridSize = Math.max(0, Math.trunc(Number(state.gridSize || 0)))
 
   if (!gridSize) {
@@ -548,6 +1846,40 @@ function gridFrameFromState(state = {}) {
   place(state.player, 'P')
 
   return frame
+}
+
+function recordingGameIdForSession(session) {
+  return (
+    (session &&
+      session.game &&
+      session.game.gameInfo &&
+      session.game.gameInfo.gameId) ||
+    (session &&
+      session.game &&
+      session.game.initialState &&
+      session.game.initialState.gameId) ||
+    (session && session.sessionId) ||
+    ''
+  )
+}
+
+function availableActionIdsFromState(state = {}) {
+  if (Array.isArray(state.availableActionIds)) {
+    return state.availableActionIds
+      .map((item) => Number.parseInt(item, 10))
+      .filter((item) => Number.isFinite(item))
+  }
+
+  if (!Array.isArray(state.availableActions)) {
+    return []
+  }
+
+  return state.availableActions
+    .map((item) => {
+      const match = String(item || '').match(/^ACTION([1-7])$/)
+      return match ? Number(match[1]) : null
+    })
+    .filter((item) => Number.isFinite(item))
 }
 
 function frameToText(frame) {
@@ -603,7 +1935,7 @@ function fallbackTimelineFromTrace(session, trace, replay) {
 }
 
 function buildReplayRecording({session, trace, replay}) {
-  const gameId = session.sessionId
+  const gameId = recordingGameIdForSession(session)
   const startedAt =
     session.manifest.startTime || session.createdAt || '1970-01-01T00:00:00Z'
   const timeline =
@@ -611,6 +1943,7 @@ function buildReplayRecording({session, trace, replay}) {
       ? replay.timeline
       : fallbackTimelineFromTrace(session, trace, replay)
   const entries = timeline.map((point, index) => {
+    const state = point && point.state ? point.state : null
     const actionInput =
       point && point.actionInput
         ? {
@@ -623,18 +1956,52 @@ function buildReplayRecording({session, trace, replay}) {
             reasoning: point.actionInput.reasoning || null,
           }
         : null
-    const state = point && point.state ? point.state : null
+    let levelsCompleted = 0
+    if (typeof (point && point.levelsCompleted) === 'number') {
+      levelsCompleted = point.levelsCompleted
+    } else if (typeof (state && state.levelsCompleted) === 'number') {
+      levelsCompleted = state.levelsCompleted
+    }
+
+    let winLevels = 0
+    if (typeof (point && point.winLevels) === 'number') {
+      winLevels = point.winLevels
+    } else if (typeof (state && state.winLevels) === 'number') {
+      winLevels = state.winLevels
+    }
+    const availableActions = Array.isArray(point && point.availableActionIds)
+      ? point.availableActionIds
+      : availableActionIdsFromState(state || {})
+    let phase = 'action'
+    if (point && point.phase) {
+      phase = point.phase
+    } else if (point && point.fullReset) {
+      phase = 'initial'
+    }
 
     return {
       timestamp: timestampFromOffset(startedAt, point && point.t_ms),
       data: {
         game_id: gameId,
+        phase,
         frame: gridFrameFromState(state || {}),
         state: state || null,
+        game_state:
+          state && typeof state.state !== 'undefined' ? state.state : null,
+        levels_completed: levelsCompleted,
+        win_levels: winLevels,
         score: typeof point.score === 'number' ? point.score : null,
         action_input: actionInput,
-        guid: `${gameId}:${trace.participantId || 'player'}:${index}`,
-        full_reset: Boolean(point.fullReset || index === 0),
+        guid:
+          (point && point.guid) ||
+          (state && state.guid) ||
+          `${session.sessionId}:${trace.participantId || 'player'}:${index}`,
+        full_reset: Boolean(
+          typeof (point && point.fullReset) === 'boolean'
+            ? point.fullReset
+            : state && state.fullReset
+        ),
+        available_actions: availableActions,
         state_hash: point.stateHash || null,
       },
     }
@@ -654,7 +2021,7 @@ function buildReplayRecording({session, trace, replay}) {
 }
 
 function buildAgentLog({session, trace, recording}) {
-  const gameId = session.sessionId
+  const gameId = recordingGameIdForSession(session)
   const participantId = trace.participantId || 'player'
   const entries = Array.isArray(recording && recording.entries)
     ? recording.entries
@@ -695,10 +2062,21 @@ function buildAgentLog({session, trace, recording}) {
     lines.push(
       `--- step ${index} ---`,
       `timestamp: ${entry.timestamp || ''}`,
-      `phase: ${data.full_reset ? 'initial' : 'action'}`,
+      `phase: ${data.phase || (data.full_reset ? 'initial' : 'action')}`,
       `t_ms: ${Number(actionData.t_ms || 0) || 0}`,
       `action: ${actionData.action || 'RESET'}`,
       `arc_action: ${actionData.arc_action || ''}`,
+      `levels_completed: ${
+        typeof data.levels_completed === 'number' ? data.levels_completed : ''
+      }`,
+      `win_levels: ${
+        typeof data.win_levels === 'number' ? data.win_levels : ''
+      }`,
+      `available_actions: ${
+        Array.isArray(data.available_actions)
+          ? data.available_actions.join(',')
+          : ''
+      }`,
       `score: ${typeof score === 'number' ? score : ''}`,
       `score_delta: ${typeof scoreDelta === 'number' ? scoreDelta : ''}`,
       `state_hash: ${data.state_hash || ''}`,
@@ -762,15 +2140,399 @@ function createIdenaArcManager({
   rpcClient = httpClient,
 } = {}) {
   const rootDir = path.join(__dirname, '..', '..')
-  const sidecarPath = path.join(
+  const externalProcessCwd = resolveExternalProcessCwd(rootDir)
+  const sidecarPath = resolveBundledPath(
     rootDir,
     'python',
     'idena_arc',
     'arc_sidecar.py'
   )
+  const pythonPackagePath = resolveBundledPath(rootDir, 'python', 'idena_arc')
+  let arcAgiRuntimeInstallPromise = null
 
   function resolveBaseDir() {
     return baseDir || path.join(appDataPath('userData'), 'idena-arc')
+  }
+
+  function arcAgiRuntimeDir() {
+    return path.join(resolveBaseDir(), ARC_AGI_RUNTIME_DIRNAME)
+  }
+
+  function arcAgiVenvDir() {
+    return path.join(arcAgiRuntimeDir(), 'venv')
+  }
+
+  function arcAgiEnvironmentsDir() {
+    return path.join(arcAgiRuntimeDir(), 'environment_files')
+  }
+
+  function arcAgiRecordingsDir() {
+    return path.join(arcAgiRuntimeDir(), 'recordings')
+  }
+
+  function arcAgiVenvPythonPath() {
+    return getVenvPythonPath(arcAgiVenvDir())
+  }
+
+  async function collectArcAgiCacheStatus() {
+    const environmentsDir = arcAgiEnvironmentsDir()
+    const recordingsDir = arcAgiRecordingsDir()
+    const metadataFiles = []
+
+    async function walk(dir) {
+      let entries = []
+
+      try {
+        entries = await fs.readdir(dir, {withFileTypes: true})
+      } catch {
+        return
+      }
+
+      await Promise.all(
+        entries.map(async (entry) => {
+          const entryPath = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            await walk(entryPath)
+          } else if (entry.isFile() && entry.name === 'metadata.json') {
+            metadataFiles.push(entryPath)
+          }
+        })
+      )
+    }
+
+    await walk(environmentsDir)
+
+    const games = (
+      await Promise.all(
+        metadataFiles.map(async (metadataPath) => {
+          try {
+            const metadata = await fs.readJson(metadataPath)
+            return {
+              gameId: safeId(metadata.game_id || metadata.gameId, ''),
+              baseGameId: safeId(
+                String(metadata.game_id || metadata.gameId || '').split(
+                  '-',
+                  1
+                )[0],
+                ''
+              ),
+              title: boundedString(metadata.title || '', 160),
+              tags: normalizeStringList(metadata.tags || [], {
+                maxItems: 12,
+                maxLength: 80,
+              }),
+              baselineActions: Array.isArray(metadata.baseline_actions)
+                ? metadata.baseline_actions
+                    .map((item) => Number.parseInt(item, 10))
+                    .filter((item) => Number.isFinite(item) && item > 0)
+                : [],
+              downloadedAt:
+                boundedString(metadata.date_downloaded || '', 80) || null,
+            }
+          } catch {
+            return null
+          }
+        })
+      )
+    )
+      .filter((item) => item && item.gameId)
+      .sort((left, right) => left.gameId.localeCompare(right.gameId))
+
+    return {
+      environmentsDir,
+      recordingsDir,
+      cachedGameCount: games.length,
+      cachedGames: games.slice(0, 100),
+    }
+  }
+
+  function resolveSidecarPythonCommand() {
+    const configured = pythonCommand || process.env.IDENA_ARC_PYTHON
+    if (configured) {
+      const parts = commandParts(configured)
+      return {
+        command: parts.command || 'python3',
+        args: parts.args,
+        source: 'configured',
+      }
+    }
+
+    const managedPython = arcAgiVenvPythonPath()
+    if (fs.existsSync(managedPython)) {
+      return {
+        command: managedPython,
+        args: [],
+        source: 'managed-arc-agi-runtime',
+      }
+    }
+
+    return {
+      command: 'python3',
+      args: [],
+      source: 'system-default',
+    }
+  }
+
+  function python312Candidates() {
+    const candidates = [
+      process.env.IDENA_ARC_PYTHON,
+      pythonCommand,
+      process.platform === 'win32' ? 'py -3.12' : 'python3.12',
+      process.platform === 'darwin'
+        ? '/opt/homebrew/opt/python@3.12/bin/python3.12'
+        : '',
+      process.platform === 'darwin'
+        ? '/usr/local/opt/python@3.12/bin/python3.12'
+        : '',
+      process.platform === 'win32' ? 'py -3' : 'python3',
+      'python',
+    ]
+    const seen = new Set()
+
+    return candidates
+      .map((candidate) => trimString(candidate))
+      .filter(Boolean)
+      .filter((candidate) => {
+        if (seen.has(candidate)) return false
+        seen.add(candidate)
+        return true
+      })
+      .map((candidate) => {
+        const parts = commandParts(candidate)
+        return {
+          command: parts.command,
+          args: parts.args,
+          configured: candidate,
+        }
+      })
+  }
+
+  function homebrewCandidates() {
+    if (process.platform !== 'darwin') {
+      return []
+    }
+
+    return ['/opt/homebrew/bin/brew', '/usr/local/bin/brew', 'brew']
+  }
+
+  async function resolveHomebrewCommand() {
+    for (const command of homebrewCandidates()) {
+      try {
+        const result = await runCapturedCommand({
+          command,
+          args: ['--version'],
+          cwd: externalProcessCwd,
+          timeoutMs: ARC_AGI_PROBE_TIMEOUT_MS,
+          label: 'Homebrew probe',
+        })
+
+        if (result.code === 0) {
+          return {command}
+        }
+      } catch {
+        // Try the next common Homebrew path.
+      }
+    }
+
+    return null
+  }
+
+  async function probePython312Candidate(candidate) {
+    try {
+      const result = await runCapturedCommand({
+        command: candidate.command,
+        args: candidate.args.concat([
+          '-c',
+          [
+            'import json, sys',
+            'ok = sys.version_info >= (3, 12)',
+            'print(json.dumps({"ok": ok, "version": sys.version.split()[0], "executable": sys.executable}))',
+            'raise SystemExit(0 if ok else 1)',
+          ].join('; '),
+        ]),
+        cwd: externalProcessCwd,
+        timeoutMs: ARC_AGI_PROBE_TIMEOUT_MS,
+        label: 'Python 3.12 probe',
+      })
+      const details = JSON.parse(result.stdout || '{}')
+
+      return {
+        ok: result.code === 0 && details.ok === true,
+        ...candidate,
+        version: details.version || null,
+        executable: details.executable || null,
+        error: result.code === 0 ? null : result.stderr || result.stdout,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        ...candidate,
+        version: null,
+        executable: null,
+        error: rpcErrorMessage(error),
+      }
+    }
+  }
+
+  async function findPython312Command() {
+    const failures = []
+
+    for (const candidate of python312Candidates()) {
+      const probe = await probePython312Candidate(candidate)
+      if (probe.ok) return probe
+      failures.push(probe)
+    }
+
+    return {command: null, failures}
+  }
+
+  async function installPython312WithHomebrew() {
+    const homebrew = await resolveHomebrewCommand()
+
+    if (!homebrew) {
+      return false
+    }
+
+    await runRequiredCommand({
+      command: homebrew.command,
+      args: ['install', 'python@3.12'],
+      cwd: externalProcessCwd,
+      timeoutMs: ARC_AGI_PYTHON_INSTALL_TIMEOUT_MS,
+      label: 'Install Python 3.12 with Homebrew',
+    })
+
+    return true
+  }
+
+  async function resolvePython312Command({allowHomebrewInstall = false} = {}) {
+    const found = await findPython312Command()
+
+    if (found.command) {
+      return found
+    }
+
+    if (allowHomebrewInstall && (await installPython312WithHomebrew())) {
+      const afterInstall = await findPython312Command()
+      if (afterInstall.command) {
+        return afterInstall
+      }
+    }
+
+    const failures = found.failures || []
+    const checked = failures
+      .map((item) => item.configured)
+      .filter(Boolean)
+      .join(', ')
+
+    throw new Error(
+      `Python 3.12 is required to prepare ARC-AGI public games. Install Python 3.12 and try again.${
+        checked ? ` Checked: ${checked}.` : ''
+      }`
+    )
+  }
+
+  async function probeArcAgiPython(commandSpec) {
+    try {
+      const result = await runCapturedCommand({
+        command: commandSpec.command,
+        args: commandSpec.args.concat([
+          '-c',
+          [
+            'import json, sys',
+            'import arcengine',
+            'import arc_agi',
+            'print(json.dumps({"ready": True, "version": sys.version.split()[0], "executable": sys.executable}))',
+          ].join('; '),
+        ]),
+        cwd: externalProcessCwd,
+        timeoutMs: ARC_AGI_PROBE_TIMEOUT_MS,
+        label: 'ARC-AGI runtime probe',
+      })
+      const details = JSON.parse(result.stdout || '{}')
+
+      return {
+        ready: result.code === 0 && details.ready === true,
+        pythonPath: details.executable || commandSpec.command,
+        pythonVersion: details.version || null,
+        error: result.code === 0 ? null : outputTail(result.stderr),
+      }
+    } catch (error) {
+      return {
+        ready: false,
+        pythonPath: commandSpec.command,
+        pythonVersion: null,
+        error: rpcErrorMessage(error),
+      }
+    }
+  }
+
+  async function getArcAgiRuntimeStatus() {
+    const runtimeDir = arcAgiRuntimeDir()
+    const venvPython = arcAgiVenvPythonPath()
+    const sidecarPython = resolveSidecarPythonCommand()
+    const installed = await fs.pathExists(venvPython)
+    const probe = await probeArcAgiPython(sidecarPython)
+    const cache = await collectArcAgiCacheStatus()
+
+    if (probe.ready) {
+      return {
+        ok: true,
+        ready: true,
+        installed,
+        installing: Boolean(arcAgiRuntimeInstallPromise),
+        runtimeDir,
+        venvPython,
+        pythonPath: probe.pythonPath,
+        pythonVersion: probe.pythonVersion,
+        source: sidecarPython.source,
+        cache,
+        message:
+          cache.cachedGameCount > 0
+            ? `ARC-AGI public games are ready on this device; ${cache.cachedGameCount} game(s) are cached.`
+            : 'ARC-AGI public games are ready on this device.',
+      }
+    }
+
+    const candidate = await findPython312Command()
+    const homebrew = candidate.command ? null : await resolveHomebrewCommand()
+    let installPython = null
+    let message =
+      'Python 3.12 is required before IdenaArc can prepare ARC-AGI public games.'
+
+    if (candidate.command) {
+      installPython = {
+        command: candidate.configured,
+        version: candidate.version,
+        executable: candidate.executable,
+      }
+      message =
+        'ARC-AGI toolkit is not installed yet. Click Prepare runtime to create the local Python environment.'
+    } else if (homebrew) {
+      installPython = {
+        command: 'brew install python@3.12',
+        version: '3.12',
+        executable: homebrew.command,
+      }
+      message =
+        'Python 3.12 is missing. Click Prepare runtime to install python@3.12 with Homebrew and create the ARC-AGI environment.'
+    }
+
+    return {
+      ok: true,
+      ready: false,
+      installed,
+      installing: Boolean(arcAgiRuntimeInstallPromise),
+      runtimeDir,
+      venvPython,
+      pythonPath: probe.pythonPath,
+      pythonVersion: probe.pythonVersion,
+      source: sidecarPython.source,
+      cache,
+      canInstall: Boolean(candidate.command || homebrew),
+      installPython,
+      error: probe.error,
+      message,
+    }
   }
 
   function relayDir() {
@@ -798,6 +2560,15 @@ function createIdenaArcManager({
       traceDir(),
       safeId(sessionId, 'session'),
       `${safeId(resultId, 'result')}.json`
+    )
+  }
+
+  function arcScorecardPath(sessionId, scorecardId) {
+    return path.join(
+      traceDir(),
+      safeId(sessionId, 'session'),
+      'arc-scorecards',
+      `${safeId(scorecardId, 'scorecard')}.json`
     )
   }
 
@@ -830,6 +2601,44 @@ function createIdenaArcManager({
       }
       throw error
     }
+  }
+
+  function assertPathInsideRoot(filePath, root, reason) {
+    const resolvedPath = path.resolve(String(filePath || '').trim())
+    const resolvedRoot = path.resolve(root)
+    const prefix = `${resolvedRoot}${path.sep}`
+
+    if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(prefix)) {
+      throw new Error(reason)
+    }
+
+    return resolvedPath
+  }
+
+  async function readTraceBundleInput(payload = {}) {
+    if (payload.bundle) {
+      return payload.bundle
+    }
+
+    if (payload.sessionId && payload.resultId) {
+      return readJson(
+        traceBundlePath(payload.sessionId, payload.resultId),
+        null
+      )
+    }
+
+    if (payload.bundlePath) {
+      return readJson(
+        assertPathInsideRoot(
+          payload.bundlePath,
+          traceDir(),
+          'trace_bundle_path_outside_store'
+        ),
+        null
+      )
+    }
+
+    return null
   }
 
   async function writeJson(filePath, value) {
@@ -969,6 +2778,12 @@ function createIdenaArcManager({
       payload.adapter || payload.identityAdapter || 'external'
     )
 
+    if (payload.signerPrivateKey || payload.privateKey) {
+      throw new Error(
+        'Renderer-supplied private keys are not accepted for IdenaArc signing'
+      )
+    }
+
     if (adapter === 'rehearsal-devnet') {
       const signer = getDevnetSignerDetails()
       return {
@@ -978,19 +2793,7 @@ function createIdenaArcManager({
       }
     }
 
-    const privateKeyHex = String(
-      payload.signerPrivateKey || payload.privateKey || ''
-    ).trim()
-
-    if (!privateKeyHex) {
-      throw new Error('A local signer private key is required for this adapter')
-    }
-
-    return {
-      adapter: 'external',
-      address: privateKeyToAddress(privateKeyHex),
-      privateKeyHex,
-    }
+    throw new Error('A managed internal signer is required for this adapter')
   }
 
   async function createNodeSignature(payload, resultPayload) {
@@ -1029,11 +2832,13 @@ function createIdenaArcManager({
     )
     const proofMode = normalizeProofMode(payload, adapter)
 
-    if (
-      adapter === 'rehearsal-devnet' ||
-      payload.signerPrivateKey ||
-      payload.privateKey
-    ) {
+    if (payload.signerPrivateKey || payload.privateKey) {
+      throw new Error(
+        'Renderer-supplied private keys are not accepted for IdenaArc signing'
+      )
+    }
+
+    if (adapter === 'rehearsal-devnet') {
       const signer = resolveInternalSigner(payload)
 
       if (
@@ -1055,7 +2860,7 @@ function createIdenaArcManager({
         identityProof: {
           type: 'idena-arc-signature-proof-v0',
           status: 'verified',
-          mode: adapter === 'rehearsal-devnet' ? proofMode : 'internal-signer',
+          mode: proofMode,
         },
       }
     }
@@ -1113,6 +2918,13 @@ function createIdenaArcManager({
     const adapter = String(
       payload.adapter || payload.identityAdapter || 'external'
     )
+
+    if (payload.signerPrivateKey || payload.privateKey) {
+      throw new Error(
+        'Renderer-supplied private keys are not accepted for IdenaArc signing'
+      )
+    }
+
     const payloadAddress = trimString(payload.address)
     const participantAddress = trimString(participant.address)
 
@@ -1122,12 +2934,6 @@ function createIdenaArcManager({
 
     if (participantAddress) {
       return normalizeAddress(participantAddress)
-    }
-
-    if (payload.signerPrivateKey || payload.privateKey) {
-      return normalizeAddress(
-        privateKeyToAddress(payload.signerPrivateKey || payload.privateKey)
-      )
     }
 
     if (adapter === 'rehearsal-devnet') {
@@ -1480,12 +3286,58 @@ function createIdenaArcManager({
     }
   }
 
+  function isArcAgiPublicGenerator(generator = {}) {
+    return generator && generator.kind === 'arc-agi-public-game-v0'
+  }
+
+  function withTransientArcAgiCredentials(generator = {}, payload = {}) {
+    if (!isArcAgiPublicGenerator(generator)) {
+      return generator
+    }
+
+    const arcApiKey = trimString(payload.arcApiKey || payload.arc_api_key)
+    const arcBaseUrl = trimString(payload.arcBaseUrl || payload.arc_base_url)
+    const scorecardMode = trimString(
+      payload.scorecardMode || payload.arcScorecardMode
+    )
+
+    return {
+      ...generator,
+      ...(arcApiKey ? {arcApiKey} : {}),
+      ...(arcBaseUrl ? {arcBaseUrl} : {}),
+      ...(scorecardMode ? {scorecardMode} : {}),
+    }
+  }
+
+  function sidecarEnvForPayload(payload = {}) {
+    const generator = payload.generator || {}
+
+    if (
+      payload.command !== 'cacheArcAgiGames' &&
+      !isArcAgiPublicGenerator(generator)
+    ) {
+      return process.env
+    }
+
+    const environmentsDir = arcAgiEnvironmentsDir()
+    const recordingsDir = arcAgiRecordingsDir()
+
+    return {
+      ...process.env,
+      IDENA_ARC_AGI_ENVIRONMENTS_DIR: environmentsDir,
+      IDENA_ARC_AGI_RECORDINGS_DIR: recordingsDir,
+      ENVIRONMENTS_DIR: environmentsDir,
+      RECORDINGS_DIR: recordingsDir,
+    }
+  }
+
   function runSidecar(payload) {
-    const command = pythonCommand || process.env.IDENA_ARC_PYTHON || 'python3'
+    const python = resolveSidecarPythonCommand()
 
     return new Promise((resolve, reject) => {
-      const child = spawn(command, [sidecarPath], {
-        cwd: rootDir,
+      const child = spawn(python.command, python.args.concat([sidecarPath]), {
+        cwd: externalProcessCwd,
+        env: sidecarEnvForPayload(payload),
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       let stdout = ''
@@ -1517,6 +3369,183 @@ function createIdenaArcManager({
     })
   }
 
+  async function installArcAgiRuntime() {
+    const runtimeDir = arcAgiRuntimeDir()
+    const venvDir = arcAgiVenvDir()
+    const venvPython = arcAgiVenvPythonPath()
+    const sourcePath = `${pythonPackagePath}[arc-agi]`
+    const pipInstallSourceArgs =
+      toAsarUnpackedPath(rootDir) === rootDir
+        ? ['-m', 'pip', 'install', '-e', sourcePath]
+        : ['-m', 'pip', 'install', sourcePath]
+    const python312 = await resolvePython312Command({
+      allowHomebrewInstall: true,
+    })
+
+    await fs.ensureDir(runtimeDir)
+
+    if (!(await fs.pathExists(venvPython))) {
+      await runRequiredCommand({
+        command: python312.command,
+        args: python312.args.concat(['-m', 'venv', venvDir]),
+        cwd: externalProcessCwd,
+        timeoutMs: ARC_AGI_SETUP_TIMEOUT_MS,
+        label: 'Create ARC-AGI Python environment',
+      })
+    }
+
+    await runRequiredCommand({
+      command: venvPython,
+      args: ['-m', 'pip', 'install', '--upgrade', 'pip'],
+      cwd: externalProcessCwd,
+      timeoutMs: ARC_AGI_SETUP_TIMEOUT_MS,
+      label: 'Upgrade ARC-AGI runtime installer',
+    })
+
+    await runRequiredCommand({
+      command: venvPython,
+      args: pipInstallSourceArgs,
+      cwd: externalProcessCwd,
+      timeoutMs: ARC_AGI_SETUP_TIMEOUT_MS,
+      label: 'Install ARC-AGI runtime packages',
+    })
+
+    const runtimeStatus = await getArcAgiRuntimeStatus()
+    if (!runtimeStatus.ready) {
+      throw new Error(
+        `ARC-AGI runtime installation finished, but the toolkit is still unavailable${
+          runtimeStatus.error ? `: ${runtimeStatus.error}` : '.'
+        }`
+      )
+    }
+
+    return {
+      ...runtimeStatus,
+      installed: true,
+    }
+  }
+
+  async function cacheArcAgiPublicGames(payload = {}) {
+    const gameIds = normalizeStringList(
+      payload.gameIds || payload.arcAgiGameIds || payload.arcAgiGameId || [],
+      {maxItems: 50, maxLength: 96}
+    )
+      .map((item) => safeId(item, ''))
+      .filter(Boolean)
+    const cacheAllPublic =
+      payload.cacheAllPublic === undefined
+        ? gameIds.length < 1
+        : payload.cacheAllPublic !== false
+
+    return runSidecar({
+      command: 'cacheArcAgiGames',
+      generator: {
+        kind: 'arc-agi-public-game-v0',
+        cacheAllPublic,
+        gameIds,
+        ...withTransientArcAgiCredentials(
+          {kind: 'arc-agi-public-game-v0'},
+          payload
+        ),
+      },
+    })
+  }
+
+  async function listArcAgiPublicGames(payload = {}) {
+    const result = await runSidecar({
+      command: 'listArcAgiGames',
+      generator: {
+        kind: 'arc-agi-public-game-v0',
+        ...withTransientArcAgiCredentials(
+          {kind: 'arc-agi-public-game-v0'},
+          payload
+        ),
+        cacheAllPublic: false,
+        gameIds: normalizeStringList(
+          payload.gameIds || payload.arcAgiGameIds || [],
+          {maxItems: 50, maxLength: 96}
+        )
+          .map((item) => safeId(item, ''))
+          .filter(Boolean),
+      },
+    })
+
+    return {
+      ...result,
+      cached:
+        result && Array.isArray(result.games)
+          ? result.games.filter((game) => game && game.local)
+          : [],
+    }
+  }
+
+  async function ensureArcAgiRuntime() {
+    const currentStatus = await getArcAgiRuntimeStatus()
+
+    if (currentStatus.ready) {
+      return currentStatus
+    }
+
+    return installArcAgiRuntime()
+  }
+
+  async function prepareArcAgiRuntime(payload = {}) {
+    if (arcAgiRuntimeInstallPromise) {
+      return arcAgiRuntimeInstallPromise
+    }
+
+    arcAgiRuntimeInstallPromise = ensureArcAgiRuntime()
+      .then(async (result) => {
+        if (payload.cacheArcAgiGames === false) {
+          return {
+            ...result,
+            ok: true,
+          }
+        }
+
+        let cacheResult = null
+        try {
+          cacheResult = await cacheArcAgiPublicGames(payload)
+        } catch (error) {
+          cacheResult = {
+            ok: false,
+            error: rpcErrorMessage(error),
+          }
+        }
+
+        const runtimeStatus = await getArcAgiRuntimeStatus()
+        const cachedCount =
+          runtimeStatus.cache && runtimeStatus.cache.cachedGameCount
+            ? runtimeStatus.cache.cachedGameCount
+            : 0
+
+        return {
+          ...result,
+          ...runtimeStatus,
+          ok: true,
+          cacheResult,
+          message:
+            cacheResult && cacheResult.ok === false
+              ? `ARC-AGI runtime is installed, but game caching failed: ${
+                  cacheResult.error ||
+                  (cacheResult.cache &&
+                    cacheResult.cache.failed &&
+                    cacheResult.cache.failed[0] &&
+                    cacheResult.cache.failed[0].error) ||
+                  'unknown cache error'
+                }`
+              : `ARC-AGI runtime is ready${
+                  cachedCount > 0 ? ` with ${cachedCount} cached game(s)` : ''
+                }.`,
+        }
+      })
+      .finally(() => {
+        arcAgiRuntimeInstallPromise = null
+      })
+
+    return arcAgiRuntimeInstallPromise
+  }
+
   async function generateGame(payload = {}) {
     let session = await readSession(payload.sessionId)
 
@@ -1528,7 +3557,10 @@ function createIdenaArcManager({
     const game = await runSidecar({
       command: 'generate',
       seed: session.finalSeed.finalSeed,
-      generator: session.manifest.generator,
+      generator: withTransientArcAgiCredentials(
+        session.manifest.generator,
+        payload
+      ),
     })
 
     session.game = {
@@ -1544,14 +3576,17 @@ function createIdenaArcManager({
     }
   }
 
-  async function replayTrace(session, actions) {
+  async function replayTrace(session, actions, payload = {}) {
     const game =
       session.game || (await generateGame({sessionId: session.sessionId})).game
 
     return runSidecar({
       command: 'replay',
       seed: session.finalSeed.finalSeed,
-      generator: session.manifest.generator,
+      generator: withTransientArcAgiCredentials(
+        session.manifest.generator,
+        payload
+      ),
       initialState: game.initialState,
       actions,
     })
@@ -1594,7 +3629,7 @@ function createIdenaArcManager({
       participant
     )
     const actions = normalizeActions(payload.actions)
-    const replay = await replayTrace(session, actions)
+    const replay = await replayTrace(session, actions, payload)
     const trace = {
       protocol: TRACE_PROTOCOL,
       sessionId: session.sessionId,
@@ -1716,8 +3751,109 @@ function createIdenaArcManager({
     }
   }
 
+  async function previewTrace(payload = {}) {
+    let session = await readSession(payload.sessionId)
+
+    if (!session.game) {
+      session = (await generateGame(payload)).session
+    }
+
+    const actions = normalizeActions(payload.actions)
+    const replay = await replayTrace(session, actions, payload)
+
+    return {
+      session,
+      replay,
+      actions: replay.actions || actions,
+      finalState: replay.finalState,
+      finalStateHash: replay.finalStateHash,
+      score: replay.score,
+      completed: Boolean(replay.completed),
+    }
+  }
+
+  async function submitArcAgiScorecard(payload = {}) {
+    let session = await readSession(payload.sessionId)
+
+    if (!session.finalSeed) {
+      const computed = await computeFinalSeed(payload)
+      session = computed.session
+    }
+
+    if (!isArcAgiPublicGenerator(session.manifest.generator)) {
+      throw new Error('Official ARC scorecards require an ARC-AGI public game')
+    }
+
+    const game =
+      session.game ||
+      (await generateGame({...payload, sessionId: session.sessionId})).game
+    const actions = normalizeActions(payload.actions)
+    const scorecardMode =
+      trimString(payload.scorecardMode || payload.arcScorecardMode) ||
+      'competition'
+    const scorecard = await runSidecar({
+      command: 'submitArcAgiScorecard',
+      seed: session.finalSeed.finalSeed,
+      generator: {
+        ...withTransientArcAgiCredentials(session.manifest.generator, payload),
+        scorecardMode,
+        scorecardTags: normalizeStringList(
+          payload.scorecardTags || ['idena-arc'],
+          {maxItems: 12, maxLength: 80}
+        ),
+        sourceUrl: boundedString(payload.sourceUrl || '', 400),
+      },
+      initialState: game.initialState,
+      actions,
+    })
+    const scorecardHash = hashJsonPrefixed(scorecard)
+    const scorecardId =
+      safeId(scorecard.scorecardId || scorecard.cardId, '') ||
+      scorecardHash.slice(7, 19)
+    const storedScorecard = {
+      protocol: 'idena-arc-official-scorecard-record-v0',
+      sessionId: session.sessionId,
+      gameId: scorecard.gameId,
+      scorecardId,
+      scorecardUrl: scorecard.scorecardUrl,
+      scorecardHash,
+      mode: scorecard.mode || scorecardMode,
+      submittedAt: isoNow(),
+      actionCount: Array.isArray(scorecard.actions)
+        ? scorecard.actions.length
+        : actions.length,
+      scorecard,
+    }
+
+    await writeJson(
+      arcScorecardPath(session.sessionId, scorecardId),
+      storedScorecard
+    )
+
+    session.arcScorecards = (
+      Array.isArray(session.arcScorecards) ? session.arcScorecards : []
+    )
+      .filter((item) => item.scorecardId !== scorecardId)
+      .concat({
+        scorecardId,
+        scorecardUrl: scorecard.scorecardUrl,
+        scorecardHash,
+        mode: storedScorecard.mode,
+        gameId: scorecard.gameId,
+        actionCount: storedScorecard.actionCount,
+        submittedAt: storedScorecard.submittedAt,
+      })
+
+    await writeSession(session)
+
+    return {
+      session,
+      scorecard: storedScorecard,
+    }
+  }
+
   async function verifyTraceBundle(payload = {}) {
-    const bundle = payload.bundle || (await readJson(payload.bundlePath, null))
+    const bundle = await readTraceBundleInput(payload)
 
     if (!bundle) {
       throw new Error('Trace bundle is required')
@@ -1844,6 +3980,7 @@ function createIdenaArcManager({
       sessionId,
       resultId,
       participantId,
+      replayActions: Array.isArray(trace.actions) ? trace.actions : [],
     }
     const humanRuleAnnotation = normalizeHumanRuleAnnotation(
       payload.humanRuleAnnotation || {},
@@ -1853,11 +3990,41 @@ function createIdenaArcManager({
       payload.aiSelfAnnotation || {},
       context
     )
-    const comparisonAnnotation = normalizeComparisonAnnotation(
+    const localAiGameplayAnnotation = normalizeLocalAiGameplayAnnotation(
+      payload.localAiGameplayAnnotation || {},
+      context
+    )
+    const humanReplayAnnotation = normalizeHumanReplayAnnotation(
+      payload.humanReplayAnnotation || {},
+      context
+    )
+    const normalizedComparisonAnnotation = normalizeComparisonAnnotation(
       payload.comparisonAnnotation || {},
       context
     )
-    const annotationPayload = {
+    const comparisonAnnotation = {
+      ...normalizedComparisonAnnotation,
+      actionButtonComparison: buildActionButtonComparisonFromDescriptions(
+        humanReplayAnnotation.actionButtonDescriptions,
+        localAiGameplayAnnotation.actionButtonDescriptions
+      ),
+    }
+    const teacherJourney = normalizeTeacherJourney(
+      payload.teacherJourney || {},
+      context
+    )
+    const compressedTeacherMemory = normalizeCompressedTeacherMemory(
+      payload.compressedTeacherMemory ||
+        (teacherJourney && teacherJourney.compressedTeacherMemory) ||
+        {}
+    )
+    const providerAnnotationDrafts = normalizeProviderAnnotationDrafts(
+      payload.providerAnnotationDrafts ||
+        (teacherJourney && teacherJourney.providerAnnotationDrafts) ||
+        []
+    )
+    const frameContext = buildCompactFrameContext(traceBundle)
+    const baseAnnotationPayload = {
       protocol: ANNOTATION_BUNDLE_PROTOCOL,
       access: 'local-only-private-by-default',
       releasePolicy: 'private-by-default-explicit-publish-only',
@@ -1875,7 +4042,21 @@ function createIdenaArcManager({
       generatorHash: result.generatorHash || null,
       humanRuleAnnotation,
       aiSelfAnnotation,
+      localAiGameplayAnnotation,
+      humanReplayAnnotation,
       comparisonAnnotation,
+      teacherJourney,
+      compressedTeacherMemory,
+      providerAnnotationDrafts,
+      frameContext,
+    }
+    const annotationValidation = buildAnnotationValidationRecord(
+      baseAnnotationPayload,
+      traceBundle
+    )
+    const annotationPayload = {
+      ...baseAnnotationPayload,
+      annotationValidation,
     }
     const annotationHash = hashJsonPrefixed(annotationPayload)
     const traceHashesMatch =
@@ -1966,7 +4147,12 @@ function createIdenaArcManager({
       resultId: bundle.annotation.resultId,
       humanRuleAnnotation: bundle.annotation.humanRuleAnnotation,
       aiSelfAnnotation: bundle.annotation.aiSelfAnnotation,
+      localAiGameplayAnnotation: bundle.annotation.localAiGameplayAnnotation,
+      humanReplayAnnotation: bundle.annotation.humanReplayAnnotation,
       comparisonAnnotation: bundle.annotation.comparisonAnnotation,
+      teacherJourney: bundle.annotation.teacherJourney,
+      compressedTeacherMemory: bundle.annotation.compressedTeacherMemory,
+      providerAnnotationDrafts: bundle.annotation.providerAnnotationDrafts,
       createdAt: bundle.annotation.createdAt,
       updatedAt: bundle.annotation.updatedAt,
     })
@@ -1990,6 +4176,363 @@ function createIdenaArcManager({
       hasTrainingSignal: rebuilt.hasTrainingSignal,
       annotationHash: rebuilt.annotationHash,
       suppliedAnnotationHash,
+    }
+  }
+
+  async function runLocalAiAttempt(payload = {}) {
+    const actions = normalizeActions(payload.actions || [])
+    const preview = actions.length
+      ? await previewTrace({
+          ...payload,
+          actions,
+        })
+      : null
+
+    return {
+      ok: true,
+      protocol: 'idena-arc-local-ai-attempt-result-v1',
+      attempt: normalizeAttemptForTeacherJourney(
+        {
+          actor: 'local-ai',
+          attemptIndex: payload.attemptIndex || 0,
+          startedAt: payload.startedAt || isoNow(),
+          endedAt: isoNow(),
+          actions,
+          replayTimeline:
+            preview && preview.replay && Array.isArray(preview.replay.timeline)
+              ? preview.replay.timeline
+              : [],
+          finalState: preview ? preview.finalState : null,
+          finalStateHash: preview ? preview.finalStateHash : null,
+          completed: Boolean(preview && preview.completed),
+          gameOver: Boolean(
+            preview && preview.finalState && preview.finalState.gameOver
+          ),
+          stopReason: payload.stopReason || 'provided_actions_previewed',
+          model: payload.model || '',
+          runtime: payload.runtime || '',
+          notes:
+            'Main-process preview wrapper. Renderer local AI chat performs live step selection.',
+        },
+        'local-ai'
+      ),
+      preview,
+    }
+  }
+
+  async function reviewTeacherJourney(payload = {}) {
+    const teacherJourney = normalizeTeacherJourney(
+      payload.teacherJourney || payload,
+      {status: payload.status || 'draft'}
+    )
+    const humanAttempt = teacherJourney && teacherJourney.humanAttempt
+    const localAiAttempts =
+      teacherJourney && Array.isArray(teacherJourney.localAiAttempts)
+        ? teacherJourney.localAiAttempts
+        : []
+    const localAiAttempt = localAiAttempts.length
+      ? localAiAttempts[localAiAttempts.length - 1]
+      : null
+
+    if (!humanAttempt || !localAiAttempt) {
+      return {
+        ok: false,
+        error: 'teacher_journey_attempts_missing',
+        comparison: '',
+      }
+    }
+
+    let outcomeComparison =
+      'Compare action effects and repeated state hashes before retrying.'
+    if (localAiAttempt.completed && !humanAttempt.completed) {
+      outcomeComparison =
+        'The AI found a completion the human did not; ask whether it used the correct hidden rule.'
+    } else if (!localAiAttempt.completed && humanAttempt.completed) {
+      outcomeComparison =
+        'The human found a completion the AI missed; teach the decisive action-effect relation.'
+    }
+
+    const comparison = [
+      `Human: ${humanAttempt.completed ? 'completed' : 'unfinished'}, ${
+        humanAttempt.actionCount
+      } action(s).`,
+      `Local AI: ${localAiAttempt.completed ? 'completed' : 'unfinished'}, ${
+        localAiAttempt.actionCount
+      } action(s), stop=${localAiAttempt.stopReason || 'unknown'}.`,
+      outcomeComparison,
+    ].join('\n')
+
+    return {
+      ok: true,
+      protocol: 'idena-arc-teacher-review-v1',
+      comparison,
+      teacherJourney,
+    }
+  }
+
+  async function compressTeacherFeedback(payload = {}) {
+    const source = [
+      payload.text,
+      payload.humanFeedback,
+      payload.teacherFeedback,
+      payload.humanVsAiGap,
+    ]
+      .filter(Boolean)
+      .join('\n')
+    const compressedTeacherMemory = compressTeacherFeedbackText(source)
+
+    return {
+      ok: Boolean(compressedTeacherMemory),
+      compressedTeacherMemory,
+    }
+  }
+
+  async function finalizeTeacherJourney(payload = {}) {
+    const teacherJourney = normalizeTeacherJourney(
+      payload.teacherJourney || {},
+      {status: 'final'}
+    )
+    const compressedTeacherMemory = normalizeCompressedTeacherMemory(
+      payload.compressedTeacherMemory ||
+        (teacherJourney && teacherJourney.compressedTeacherMemory) ||
+        {}
+    )
+
+    return {
+      ok: Boolean(teacherJourney),
+      protocol: 'idena-arc-teacher-finalize-v1',
+      teacherJourney: teacherJourney
+        ? {
+            ...teacherJourney,
+            phase: 'finalized',
+            compressedTeacherMemory,
+          }
+        : null,
+      compressedTeacherMemory,
+    }
+  }
+
+  async function importAnnotationBundle(payload = {}) {
+    const bundle = payload.annotationBundle || payload.bundle || payload.payload
+
+    if (!bundle || !bundle.annotation) {
+      return {
+        accepted: false,
+        reason: 'annotation_bundle_required',
+      }
+    }
+
+    const verification = await verifyAnnotationBundle({
+      annotationBundle: bundle,
+      traceBundle: payload.traceBundle,
+    })
+
+    if (!verification.ok) {
+      return {
+        accepted: false,
+        reason: 'annotation_verification_failed',
+        verification,
+      }
+    }
+
+    await writeJson(
+      annotationBundlePath(bundle.annotation.sessionId, bundle.annotationId),
+      bundle
+    )
+
+    return {
+      accepted: true,
+      reason: null,
+      annotationId: bundle.annotationId,
+      annotationHash: bundle.annotationHash,
+      verification,
+      stored: {
+        namespace: 'idena-arc/annotations',
+        sessionId: bundle.annotation.sessionId,
+        filename: `${safeId(bundle.annotationId, 'annotation')}.json`,
+      },
+    }
+  }
+
+  function verifyTrainingDatasetShape(dataset = {}) {
+    if (!dataset || dataset.protocol !== TRAINING_DATASET_EXPORT_PROTOCOL) {
+      return {ok: false, reason: 'dataset_protocol_invalid'}
+    }
+
+    const examples = Array.isArray(dataset.examples) ? dataset.examples : []
+    const expectedCount = Number(dataset.exampleCount)
+
+    if (
+      Number.isFinite(expectedCount) &&
+      expectedCount >= 0 &&
+      examples.length !== expectedCount
+    ) {
+      return {ok: false, reason: 'dataset_example_count_mismatch'}
+    }
+
+    if (String(dataset.datasetHash || '').trim()) {
+      const datasetWithoutHash = {...dataset}
+      delete datasetWithoutHash.datasetHash
+      delete datasetWithoutHash.stored
+
+      if (dataset.datasetHash !== hashJsonPrefixed(datasetWithoutHash)) {
+        return {ok: false, reason: 'dataset_hash_mismatch'}
+      }
+    }
+
+    const invalidExample = examples.find(
+      (example) =>
+        !example ||
+        typeof example !== 'object' ||
+        Array.isArray(example) ||
+        example.protocol !== TRAINING_EXAMPLE_PROTOCOL ||
+        !String(example.annotationHash || '').trim() ||
+        !String(example.traceHash || '').trim()
+    )
+
+    if (invalidExample) {
+      return {ok: false, reason: 'dataset_example_invalid'}
+    }
+
+    return {
+      ok: true,
+      reason: null,
+      exampleCount: examples.length,
+      datasetHash: dataset.datasetHash || hashJsonPrefixed(dataset),
+    }
+  }
+
+  function comparableTrainingExample(example = {}) {
+    const comparable = {...example}
+    delete comparable.privateText
+    return comparable
+  }
+
+  async function verifyTrainingDatasetSources(dataset = {}) {
+    const examples = Array.isArray(dataset.examples) ? dataset.examples : []
+    const bundles = await listAnnotationBundles({})
+    const bundlesByAnnotationHash = new Map()
+
+    bundles.forEach((bundle) => {
+      if (bundle && bundle.annotationHash && bundle.trainingExample) {
+        bundlesByAnnotationHash.set(bundle.annotationHash, bundle)
+      }
+    })
+
+    for (const example of examples) {
+      const annotationHash = String(example.annotationHash || '').trim()
+      const bundle = bundlesByAnnotationHash.get(annotationHash)
+
+      if (!bundle) {
+        return {
+          ok: false,
+          reason: 'dataset_annotation_source_missing',
+          annotationHash,
+        }
+      }
+
+      if (
+        !bundle.acceptedForTraining ||
+        !bundle.annotation ||
+        bundle.annotation.status !== 'final'
+      ) {
+        return {
+          ok: false,
+          reason: 'dataset_annotation_source_not_final',
+          annotationHash,
+        }
+      }
+
+      const verification = await verifyAnnotationBundle({
+        annotationBundle: bundle,
+      }).catch((error) => ({
+        ok: false,
+        error: String(error && error.message ? error.message : error),
+      }))
+
+      if (!verification.ok) {
+        return {
+          ok: false,
+          reason: 'dataset_annotation_source_verification_failed',
+          annotationHash,
+          verification,
+        }
+      }
+
+      if (
+        hashJsonPrefixed(comparableTrainingExample(example)) !==
+        hashJsonPrefixed(bundle.trainingExample)
+      ) {
+        return {
+          ok: false,
+          reason: 'dataset_example_source_mismatch',
+          annotationHash,
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      reason: null,
+      checkedExampleCount: examples.length,
+    }
+  }
+
+  async function verifyTrainingDataset(payload = {}) {
+    const dataset = payload.dataset || payload.trainingDataset || payload.bundle
+    const verification = verifyTrainingDatasetShape(dataset)
+
+    if (!verification.ok) {
+      return {
+        ok: false,
+        reason: verification.reason,
+        verification,
+      }
+    }
+
+    const sourceVerification = await verifyTrainingDatasetSources(dataset)
+
+    return {
+      ...verification,
+      ok: sourceVerification.ok,
+      reason: sourceVerification.ok ? null : sourceVerification.reason,
+      sourceVerified: sourceVerification.ok,
+      sourceVerification,
+    }
+  }
+
+  async function importTrainingDataset(payload = {}) {
+    const dataset = payload.dataset || payload.trainingDataset || payload.bundle
+    const verification = await verifyTrainingDataset(payload)
+
+    if (!verification.ok) {
+      return {
+        accepted: false,
+        reason: verification.reason,
+        verification,
+      }
+    }
+
+    const exportId =
+      dataset.exportId ||
+      `imported-${String(verification.datasetHash || '')
+        .replace(/^sha256:/, '')
+        .slice(0, 16)}`
+    const datasetForStorage = {...dataset}
+    delete datasetForStorage.stored
+
+    await writeJson(trainingDatasetPath(exportId), datasetForStorage)
+
+    return {
+      accepted: true,
+      reason: null,
+      exportId,
+      datasetHash: verification.datasetHash,
+      verification,
+      stored: {
+        namespace: 'idena-arc/training-datasets',
+        filename: `${safeId(exportId, 'export')}.json`,
+      },
     }
   }
 
@@ -2043,12 +4586,31 @@ function createIdenaArcManager({
     const bundles = payload.annotationBundle
       ? [payload.annotationBundle]
       : await listAnnotationBundles({sessionId: payload.sessionId})
+    const includePrivateFields = payload.includePrivateFields === true
     const examples = bundles
       .filter((bundle) => bundle && bundle.trainingExample)
       .filter((bundle) =>
         payload.includeDrafts ? true : bundle.annotation.status === 'final'
       )
-      .map((bundle) => bundle.trainingExample)
+      .map((bundle) => {
+        if (!includePrivateFields) {
+          return bundle.trainingExample
+        }
+
+        return {
+          ...bundle.trainingExample,
+          privateText: {
+            localAiGameplayExplanation:
+              (bundle.annotation.localAiGameplayAnnotation &&
+                bundle.annotation.localAiGameplayAnnotation.explanationText) ||
+              '',
+            humanReplayExplanation:
+              (bundle.annotation.humanReplayAnnotation &&
+                bundle.annotation.humanReplayAnnotation.explanationText) ||
+              '',
+          },
+        }
+      })
     const exportId =
       payload.exportId ||
       `idena-arc-training-${Date.now().toString(36)}-${examples.length}`
@@ -2057,7 +4619,7 @@ function createIdenaArcManager({
       exportId,
       access: 'local-only-private-by-default',
       releasePolicy: 'private-by-default-explicit-publish-only',
-      privateFieldsIncluded: false,
+      privateFieldsIncluded: includePrivateFields,
       createdAt: isoNow(),
       exampleCount: examples.length,
       capabilityTags: Array.from(
@@ -2083,10 +4645,22 @@ function createIdenaArcManager({
   }
 
   async function uploadTraceBundle(payload = {}) {
-    const bundle = payload.bundle || (await readJson(payload.bundlePath, null))
+    const bundle = await readTraceBundleInput(payload)
 
     if (!bundle) {
       throw new Error('Trace bundle is required')
+    }
+
+    if (containsPrivateSigningField(bundle)) {
+      throw new Error('Trace bundle contains private signing material')
+    }
+
+    const verification = await verifyTraceBundle({bundle})
+
+    if (!verification.ok) {
+      throw new Error(
+        verification.reason || 'trace_bundle_replay_verification_failed'
+      )
     }
 
     const connection = resolveRpcConnection(payload)
@@ -2120,7 +4694,6 @@ function createIdenaArcManager({
               return {
                 adapter: 'rehearsal-devnet',
                 url: connection.url,
-                apiKey: connection.apiKey,
               }
             } catch {
               return null
@@ -2142,6 +4715,7 @@ function createIdenaArcManager({
             address: rehearsalSigner.address,
           }
         : null,
+      arcAgiRuntime: await getArcAgiRuntimeStatus(),
       recommendedAdapter: rehearsalConnection ? 'rehearsal-devnet' : 'external',
       sessions: (await listSessions()).slice(0, 10),
     }
@@ -2156,13 +4730,24 @@ function createIdenaArcManager({
     commitSalt,
     revealSalt,
     computeFinalSeed,
+    prepareArcAgiRuntime,
+    listArcAgiPublicGames,
     generateGame,
     submitTrace,
+    previewTrace,
+    runLocalAiAttempt,
+    reviewTeacherJourney,
+    compressTeacherFeedback,
+    finalizeTeacherJourney,
+    submitArcAgiScorecard,
     verifyTraceBundle,
     saveAnnotationBundle,
     verifyAnnotationBundle,
+    importAnnotationBundle,
     listAnnotationBundles,
     exportTrainingDataset,
+    verifyTrainingDataset,
+    importTrainingDataset,
     uploadTraceBundle,
   }
 }
@@ -2171,5 +4756,6 @@ module.exports = {
   PROTOCOL,
   TRACE_PROTOCOL,
   RESULT_PROTOCOL,
+  TEACHER_JOURNEY_PROTOCOL,
   createIdenaArcManager,
 }

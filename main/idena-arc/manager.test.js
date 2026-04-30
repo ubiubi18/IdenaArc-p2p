@@ -19,6 +19,12 @@ describe('idena-arc manager', () => {
     manager = createIdenaArcManager({
       baseDir,
       pythonCommand: process.env.PYTHON || 'python3',
+      validationDevnet: {
+        getPrimarySignerDetails: () => ({
+          address,
+          privateKeyHex: privateKey,
+        }),
+      },
       logger: {
         error: () => {},
         info: () => {},
@@ -55,10 +61,14 @@ describe('idena-arc manager', () => {
       sessionId: created.sessionId,
       reveals: [{participantId: 'alice', salt: committed.salt}],
     })
+    const preview = await manager.previewTrace({
+      sessionId: created.sessionId,
+      actions: ['move_right'],
+    })
     const submitted = await manager.submitTrace({
       sessionId: created.sessionId,
       participantId: 'alice',
-      signerPrivateKey: privateKey,
+      adapter: 'rehearsal-devnet',
       actions: ['move_right', 'move_down'],
     })
     const verified = await manager.verifyTraceBundle({
@@ -67,6 +77,8 @@ describe('idena-arc manager', () => {
 
     expect(seed.finalSeedHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(generated.game.initialStateHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(preview.finalStateHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(preview.actions).toHaveLength(1)
     expect(submitted.bundle.verified).toBe(true)
     expect(submitted.bundle.recordingHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(submitted.bundle.recordingJsonlHash).toMatch(/^sha256:[a-f0-9]{64}$/)
@@ -91,6 +103,11 @@ describe('idena-arc manager', () => {
     expect(submitted.bundle.agentLog.text).toContain('arc_action: ACTION4')
     expect(submitted.bundle.agentLog.text).toContain('frame:\n')
     expect(submitted.bundle.recording.entries[0].data.full_reset).toBe(true)
+    expect(submitted.bundle.recording.entries[0].data).toMatchObject({
+      levels_completed: 0,
+      win_levels: 0,
+      available_actions: [],
+    })
     expect(
       submitted.bundle.recording.entries[1].data.action_input.data
     ).toMatchObject({
@@ -172,6 +189,36 @@ describe('idena-arc manager', () => {
     expect(staleAgentRejected.agentLogMatches).toBe(false)
   })
 
+  it('rejects renderer-supplied private keys for trace signing', async () => {
+    const created = await manager.createSession({
+      participantId: 'alice',
+      playDurationMs: 10000,
+    })
+    const committed = await manager.commitSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+    })
+
+    await manager.revealSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+      salt: committed.salt,
+    })
+    await manager.generateGame({
+      sessionId: created.sessionId,
+      reveals: [{participantId: 'alice', salt: committed.salt}],
+    })
+
+    await expect(
+      manager.submitTrace({
+        sessionId: created.sessionId,
+        participantId: 'alice',
+        signerPrivateKey: privateKey,
+        actions: ['move_right'],
+      })
+    ).rejects.toThrow('Renderer-supplied private keys')
+  })
+
   it('stores private hidden-rule annotations and exports training examples only after final verification', async () => {
     const created = await manager.createSession({
       participantId: 'alice',
@@ -195,7 +242,7 @@ describe('idena-arc manager', () => {
     const submitted = await manager.submitTrace({
       sessionId: created.sessionId,
       participantId: 'alice',
-      signerPrivateKey: privateKey,
+      adapter: 'rehearsal-devnet',
       actions: ['move_right', 'move_down'],
     })
     const draft = await manager.saveAnnotationBundle({
@@ -213,11 +260,110 @@ describe('idena-arc manager', () => {
         failedAbstractions: 'The random baseline did not model distance.',
         stopReason: 'Action budget reached.',
       },
+      localAiGameplayAnnotation: {
+        model: 'local-test-agent',
+        attemptedActions: ['move_right', 'move_down'],
+        explanationText:
+          'The local AI tried a direct path and did not preserve obstacle context.',
+        structuredExplanation: {
+          summary: 'Use the visible target to choose a short path.',
+          invariants: 'Keep the player inside the grid.',
+          actionPolicy: 'Prefer ACTION4 first, then ACTION2 toward the target.',
+          rejectedAlternatives: 'Do not sample random directions first.',
+        },
+        actionRationales: 'Action 1 tested whether right movement was open.',
+        uncertaintyNotes: 'The target rule was unresolved during gameplay.',
+      },
+      humanReplayAnnotation: {
+        explanationText:
+          'Replay shows the useful clue was the state change after the first move.',
+        structuredExplanation: {
+          summary: 'Replay confirms target-directed grid movement.',
+          invariants: 'The target and obstacle positions stay fixed.',
+          actionPolicy: 'The successful prefix is ACTION4 followed by ACTION2.',
+          rejectedAlternatives: 'Ignoring score deltas was less useful.',
+        },
+        keyMoments: 'Action 1 exposed the target direction.',
+        corrections: 'Try target-directed movement before random exploration.',
+      },
       comparisonAnnotation: {
         humanVsAiGap: 'The human used the visible target and obstacle.',
         capabilityTags: 'spatial-planning',
         suggestedAdapterTarget: 'grid-distance planner',
       },
+      teacherJourney: {
+        protocol: 'idena-arc-teacher-journey-v1',
+        phase: 'finalized',
+        game: {
+          gameId: created.sessionId,
+          initialStateHash: submitted.bundle.trace.initialStateHash,
+        },
+        humanAttempt: {
+          actor: 'human',
+          actionCount: 2,
+          actions: [
+            {action: 'move_right', reason: 'Test right movement.'},
+            {action: 'move_down', reason: 'Move toward target.'},
+          ],
+          completed: false,
+          stopReason: 'human_stopped',
+        },
+        localAiAttempts: [
+          {
+            actor: 'local-ai',
+            attemptIndex: 0,
+            actionCount: 2,
+            actions: [
+              {
+                action: 'move_right',
+                reason: 'Follow the visible target.',
+                observation: 'Score improved.',
+                confidence: 0.7,
+              },
+              {
+                action: 'move_down',
+                reason: 'Continue target-directed movement.',
+                observation: 'State changed.',
+                confidence: 0.6,
+              },
+            ],
+            completed: false,
+            stopReason: 'action_cap',
+          },
+        ],
+        teacherRounds: [
+          {
+            roundIndex: 0,
+            aiComparison:
+              'The human used target-directed movement before random probes.',
+            humanFeedback:
+              'Try the visible target rule before sampling random actions.',
+            quickMarks: ['missed-rule'],
+          },
+        ],
+        providerAnnotationDrafts: [
+          {
+            provider: 'openai',
+            model: 'gpt-5.5',
+            costUsd: 0.12,
+            reviewedByHuman: false,
+            text: 'Provider draft should not become training target.',
+          },
+        ],
+      },
+      compressedTeacherMemory: {
+        compressedText:
+          'Teacher says to try the visible target rule before random probes.',
+      },
+      providerAnnotationDrafts: [
+        {
+          provider: 'openai',
+          model: 'gpt-5.5',
+          costUsd: 0.12,
+          reviewedByHuman: false,
+          text: 'Provider draft should not become training target.',
+        },
+      ],
     })
     const final = await manager.saveAnnotationBundle({
       ...draft.annotation,
@@ -225,7 +371,12 @@ describe('idena-arc manager', () => {
       traceBundle: submitted.bundle,
       humanRuleAnnotation: draft.annotation.humanRuleAnnotation,
       aiSelfAnnotation: draft.annotation.aiSelfAnnotation,
+      localAiGameplayAnnotation: draft.annotation.localAiGameplayAnnotation,
+      humanReplayAnnotation: draft.annotation.humanReplayAnnotation,
       comparisonAnnotation: draft.annotation.comparisonAnnotation,
+      teacherJourney: draft.annotation.teacherJourney,
+      compressedTeacherMemory: draft.annotation.compressedTeacherMemory,
+      providerAnnotationDrafts: draft.annotation.providerAnnotationDrafts,
     })
     const verified = await manager.verifyAnnotationBundle({
       annotationBundle: final,
@@ -234,19 +385,144 @@ describe('idena-arc manager', () => {
     const dataset = await manager.exportTrainingDataset({
       annotationBundle: final,
     })
+    const importedAnnotation = await manager.importAnnotationBundle({
+      annotationBundle: final,
+      traceBundle: submitted.bundle,
+    })
+    const importedDataset = await manager.importTrainingDataset({dataset})
 
     expect(draft.acceptedForTraining).toBe(false)
     expect(final.annotationHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(final.acceptedForTraining).toBe(true)
     expect(final.privateByDefault).toBe(true)
     expect(final.uploaded).toBe(false)
+    expect(final.annotation.frameContext).toMatchObject({
+      protocol: 'idena-arc-compact-frame-context-v0',
+      actionCount: 2,
+    })
+    expect(final.annotation.annotationValidation).toMatchObject({
+      protocol: 'idena-arc-annotation-validation-v0',
+      status: 'usable-for-training',
+      replayPrefixTask: {
+        expectedFinalAction: 'ACTION2',
+        matchedExpected: true,
+      },
+    })
+    expect(
+      final.annotation.localAiGameplayAnnotation.actionButtonDescriptions
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'ACTION4',
+          buttonLabel: 'Right',
+        }),
+        expect.objectContaining({
+          action: 'ACTION2',
+          buttonLabel: 'Down',
+        }),
+      ])
+    )
+    expect(final.annotation.humanReplayAnnotation).toMatchObject({
+      replayActions: [{action: 'move_right'}, {action: 'move_down'}],
+      actionButtonDescriptions: expect.arrayContaining([
+        expect.objectContaining({action: 'ACTION4', buttonLabel: 'Right'}),
+        expect.objectContaining({action: 'ACTION2', buttonLabel: 'Down'}),
+      ]),
+    })
+    expect(final.annotation.teacherJourney).toMatchObject({
+      protocol: 'idena-arc-teacher-journey-v1',
+      humanAttempt: {
+        actor: 'human',
+        actionCount: 2,
+      },
+      localAiAttempts: [
+        expect.objectContaining({
+          actor: 'local-ai',
+          stopReason: 'action_cap',
+        }),
+      ],
+    })
+    expect(final.annotation.providerAnnotationDrafts[0]).toMatchObject({
+      provider: 'openai',
+      reviewedByHuman: false,
+      excludedFromTraining: true,
+    })
     expect(final.trainingExample).toMatchObject({
       protocol: 'idena-arc-training-example-v0',
       access: 'local-only-private-by-default',
       traceHash: submitted.bundle.result.traceHash,
       recordingHash: submitted.bundle.recordingHash,
       agentLogHash: submitted.bundle.agentLogHash,
+      input: {
+        frameContext: {
+          protocol: 'idena-arc-compact-frame-context-v0',
+          actionCount: 2,
+        },
+        actionButtonComparison: {
+          protocol: 'idena-arc-action-button-comparison-v0',
+          buttons: expect.arrayContaining([
+            expect.objectContaining({
+              action: 'ACTION4',
+              usedBy: {human: true, localAi: true},
+            }),
+          ]),
+        },
+      },
+      target: {
+        localAiGameplayExplanation:
+          'The local AI tried a direct path and did not preserve obstacle context.',
+        localAiGameplayExplanationHash:
+          final.annotation.localAiGameplayAnnotation.compression.sourceTextHash,
+        localAiAttemptedActions: [
+          {t_ms: 0, action: 'move_right'},
+          {t_ms: 0, action: 'move_down'},
+        ],
+        localAiActionButtonDescriptions: expect.arrayContaining([
+          expect.objectContaining({action: 'ACTION4', buttonLabel: 'Right'}),
+        ]),
+        humanReplayExplanation:
+          'Replay shows the useful clue was the state change after the first move.',
+        humanReplayExplanationHash:
+          final.annotation.humanReplayAnnotation.compression.sourceTextHash,
+        humanReplayActions: expect.arrayContaining([
+          expect.objectContaining({action: 'move_right'}),
+          expect.objectContaining({action: 'move_down'}),
+        ]),
+        humanReplayActionButtonDescriptions: expect.arrayContaining([
+          expect.objectContaining({action: 'ACTION4', buttonLabel: 'Right'}),
+        ]),
+        noemonStyle: {
+          protocol: 'idena-arc-noemon-style-annotation-v0',
+          humanReplay: {
+            structuredExplanation: {
+              actionPolicy:
+                'The successful prefix is ACTION4 followed by ACTION2.',
+            },
+          },
+        },
+        annotationValidation: {
+          status: 'usable-for-training',
+        },
+        compressedTeacherMemory: {
+          compressedText:
+            'Teacher says to try the visible target rule before random probes.',
+        },
+        teacherRounds: expect.arrayContaining([
+          expect.objectContaining({
+            quickMarks: ['missed-rule'],
+          }),
+        ]),
+        providerAnnotationDrafts: [],
+        providerDraftPolicy:
+          'Provider drafts are excluded unless reviewedByHuman=true.',
+      },
     })
+    expect(
+      final.annotation.localAiGameplayAnnotation.compression.sourceTextHash
+    ).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(
+      final.annotation.humanReplayAnnotation.compression.sourceTextHash
+    ).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(verified).toMatchObject({
       ok: true,
       annotationHashMatches: true,
@@ -262,6 +538,153 @@ describe('idena-arc manager', () => {
     })
     expect(dataset.datasetHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(dataset.examples[0].capabilityTags).toContain('spatial-planning')
+    expect(dataset.examples[0].privateText).toBeUndefined()
+    expect(importedAnnotation).toMatchObject({
+      accepted: true,
+      annotationHash: final.annotationHash,
+      stored: {
+        namespace: 'idena-arc/annotations',
+      },
+    })
+    expect(importedDataset).toMatchObject({
+      accepted: true,
+      datasetHash: dataset.datasetHash,
+      verification: {
+        sourceVerified: true,
+      },
+      stored: {
+        namespace: 'idena-arc/training-datasets',
+      },
+    })
+
+    const forgedButtonBundle = await manager.saveAnnotationBundle({
+      ...draft.annotation,
+      status: 'final',
+      traceBundle: submitted.bundle,
+      localAiGameplayAnnotation: {
+        ...draft.annotation.localAiGameplayAnnotation,
+        actionButtonDescriptions: [
+          {
+            action: 'ACTION4',
+            buttonLabel: 'Down',
+            keys: ['S'],
+            description: 'Forged renderer label.',
+          },
+        ],
+      },
+      humanReplayAnnotation: {
+        ...draft.annotation.humanReplayAnnotation,
+        actionButtonDescriptions: [
+          {
+            action: 'ACTION4',
+            buttonLabel: 'Down',
+            keys: ['S'],
+            description: 'Forged renderer label.',
+          },
+        ],
+      },
+      comparisonAnnotation: {
+        ...draft.annotation.comparisonAnnotation,
+        actionButtonComparison: {
+          protocol: 'idena-arc-action-button-comparison-v0',
+          buttons: [
+            {
+              protocol: 'idena-arc-action-button-description-v0',
+              action: 'ACTION4',
+              buttonLabel: 'Down',
+              keys: ['S'],
+              description: 'Forged comparison.',
+              usedBy: {
+                human: false,
+                localAi: false,
+              },
+            },
+          ],
+        },
+      },
+    })
+    const forgedAction4 =
+      forgedButtonBundle.annotation.localAiGameplayAnnotation.actionButtonDescriptions.find(
+        (item) => item.action === 'ACTION4'
+      )
+    const forgedComparisonAction4 =
+      forgedButtonBundle.annotation.comparisonAnnotation.actionButtonComparison.buttons.find(
+        (item) => item.action === 'ACTION4'
+      )
+
+    expect(forgedAction4).toMatchObject({
+      action: 'ACTION4',
+      buttonLabel: 'Right',
+      keys: ['D', 'ArrowRight'],
+    })
+    expect(forgedComparisonAction4).toMatchObject({
+      action: 'ACTION4',
+      buttonLabel: 'Right',
+      usedBy: {
+        human: true,
+        localAi: true,
+      },
+    })
+
+    const forgedDataset = {
+      ...dataset,
+      exportId: 'forged-dataset',
+      examples: dataset.examples.map((example, index) =>
+        index === 0
+          ? {
+              ...example,
+              target: {
+                ...example.target,
+                localAiAttemptedActions: [{t_ms: 0, action: 'ACTION1'}],
+              },
+            }
+          : example
+      ),
+    }
+    delete forgedDataset.datasetHash
+    const forgedDatasetImport = await manager.importTrainingDataset({
+      dataset: forgedDataset,
+    })
+
+    expect(forgedDatasetImport).toMatchObject({
+      accepted: false,
+      reason: 'dataset_example_source_mismatch',
+    })
+
+    const missingSourceDataset = {
+      ...dataset,
+      exportId: 'missing-source-dataset',
+      examples: dataset.examples.map((example, index) =>
+        index === 0
+          ? {
+              ...example,
+              annotationHash: `sha256:${'9'.repeat(64)}`,
+            }
+          : example
+      ),
+    }
+    delete missingSourceDataset.datasetHash
+    const missingSourceImport = await manager.importTrainingDataset({
+      dataset: missingSourceDataset,
+    })
+
+    expect(missingSourceImport).toMatchObject({
+      accepted: false,
+      reason: 'dataset_annotation_source_missing',
+    })
+
+    const privateDataset = await manager.exportTrainingDataset({
+      annotationBundle: final,
+      includePrivateFields: true,
+    })
+
+    expect(privateDataset.privateFieldsIncluded).toBe(true)
+    expect(privateDataset.examples[0].privateText).toMatchObject({
+      localAiGameplayExplanation:
+        'The local AI tried a direct path and did not preserve obstacle context.',
+      humanReplayExplanation:
+        'Replay shows the useful clue was the state change after the first move.',
+    })
 
     const staleAnnotation = {
       ...final,
@@ -301,11 +724,42 @@ describe('idena-arc manager', () => {
     manager = createIdenaArcManager({
       baseDir,
       rpcClient,
+      validationDevnet: {
+        getPrimarySignerDetails: () => ({
+          address,
+          privateKeyHex: privateKey,
+        }),
+      },
       logger: {
         error: () => {},
         info: () => {},
         debug: () => {},
       },
+    })
+
+    const created = await manager.createSession({
+      participantId: 'alice',
+      playDurationMs: 10000,
+    })
+    const committed = await manager.commitSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+    })
+
+    await manager.revealSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+      salt: committed.salt,
+    })
+    await manager.generateGame({
+      sessionId: created.sessionId,
+      reveals: [{participantId: 'alice', salt: committed.salt}],
+    })
+    const submitted = await manager.submitTrace({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+      adapter: 'rehearsal-devnet',
+      actions: ['move_right', 'move_down'],
     })
 
     const identity = await manager.resolveIdentity({
@@ -314,7 +768,7 @@ describe('idena-arc manager', () => {
     })
     const upload = await manager.uploadTraceBundle({
       rpcUrl: 'http://127.0.0.1:9009',
-      bundle: {protocol: 'idena-arc-trace-bundle-v0', resultId: 'r1'},
+      bundle: submitted.bundle,
     })
 
     expect(identity.identityStatus).toBe('Human')
@@ -324,6 +778,61 @@ describe('idena-arc manager', () => {
       'dna_identity',
       'ipfs_add',
     ])
+  })
+
+  it('rejects unverifiable or out-of-store trace bundle uploads', async () => {
+    const created = await manager.createSession({
+      participantId: 'alice',
+      playDurationMs: 10000,
+    })
+    const committed = await manager.commitSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+    })
+
+    await manager.revealSalt({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+      salt: committed.salt,
+    })
+    await manager.generateGame({
+      sessionId: created.sessionId,
+      reveals: [{participantId: 'alice', salt: committed.salt}],
+    })
+    const submitted = await manager.submitTrace({
+      sessionId: created.sessionId,
+      participantId: 'alice',
+      adapter: 'rehearsal-devnet',
+      actions: ['move_right', 'move_down'],
+    })
+    const tampered = {
+      ...submitted.bundle,
+      trace: {
+        ...submitted.bundle.trace,
+        actions: ['move_left'],
+      },
+    }
+    const outsidePath = path.join(
+      os.tmpdir(),
+      `idena-arc-outside-${Date.now()}.json`
+    )
+
+    await fs.writeJson(outsidePath, submitted.bundle)
+
+    await expect(
+      manager.uploadTraceBundle({
+        rpcUrl: 'http://127.0.0.1:9009',
+        bundle: tampered,
+      })
+    ).rejects.toThrow('trace_bundle_replay_verification_failed')
+    await expect(
+      manager.uploadTraceBundle({
+        rpcUrl: 'http://127.0.0.1:9009',
+        bundlePath: outsidePath,
+      })
+    ).rejects.toThrow('trace_bundle_path_outside_store')
+
+    await fs.remove(outsidePath)
   })
 
   it('allows rehearsal identity resolution before an identity exists', async () => {
@@ -440,12 +949,21 @@ describe('idena-arc manager', () => {
       rehearsalConnection: {
         adapter: 'rehearsal-devnet',
         url: 'http://127.0.0.1:22300',
-        apiKey: 'devnet-key',
       },
       rehearsalSigner: {
         adapter: 'rehearsal-devnet',
         address,
       },
+      arcAgiRuntime: {
+        ok: true,
+        ready: expect.any(Boolean),
+        runtimeDir: path.join(baseDir, 'arc-agi-runtime'),
+      },
+    })
+    await expect(manager.status()).resolves.toMatchObject({
+      rehearsalConnection: expect.not.objectContaining({
+        apiKey: expect.anything(),
+      }),
     })
   })
 

@@ -14,3 +14,6 @@ arc-agi = [
 [tool.idena-arc]
 fallback-engine = "arcengine-compatible-local-grid-v0"
 arc-agi-toolkit = "optional"
+
+[tool.setuptools]
+py-modules = ["arc_sidecar"]

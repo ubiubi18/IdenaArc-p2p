@@ -40,15 +40,45 @@
       "properties": {
         "score": {"type": ["integer", "null"], "minimum": 0},
         "actionCount": {"type": "integer", "minimum": 0},
-        "replayVerified": {"type": "boolean"}
+        "replayVerified": {"type": "boolean"},
+        "annotationReadinessScore": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
       }
     },
-    "target": {"type": "object"}
+    "input": {
+      "type": "object",
+      "properties": {
+        "frameContext": {"$ref": "#/$defs/frameContext"},
+        "replayPrefixTasks": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "localAiAttemptedActions": {
+          "type": "array",
+          "items": {"type": "object"}
+        }
+      },
+      "additionalProperties": true
+    }
   },
   "$defs": {
     "sha256Prefixed": {
       "type": "string",
       "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "frameContext": {
+      "type": "object",
+      "properties": {
+        "protocol": {"const": "idena-arc-compact-frame-context-v0"},
+        "source": {"type": "string"},
+        "entryCount": {"type": "integer", "minimum": 0},
+        "actionCount": {"type": "integer", "minimum": 0},
+        "initial": {"type": ["object", "null"]},
+        "final": {"type": ["object", "null"]},
+        "milestones": {"type": "array", "items": {"type": "object"}},
+        "actionTrace": {"type": "array", "items": {"type": "object"}}
+      }
     }
   }
 }

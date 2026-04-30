@@ -9,6 +9,11 @@ const {
   PLACEHOLDER_SIGNATURE_REASON,
   createLocalAiFederated,
 } = require('./federated')
+const {
+  privateKeyToAddress,
+  signIdenaMessageWithPrivateKey,
+  verifyIdenaSignature,
+} = require('../idena-arc/crypto')
 
 function mockLogger() {
   return {
@@ -24,6 +29,21 @@ function createTestSignPayload(storage) {
 function createTestVerifySignature(storage) {
   return async ({payload, signature}) =>
     signature === `test-signature:${storage.sha256(JSON.stringify(payload))}`
+}
+
+function createIdenaTestSigner(privateKey) {
+  return {
+    address: privateKeyToAddress(privateKey),
+    signPayload: async (payloadText) =>
+      signIdenaMessageWithPrivateKey(privateKey, payloadText, 'prefix'),
+    verifySignature: async ({payload, identity, signature}) =>
+      verifyIdenaSignature(
+        JSON.stringify(payload),
+        signature,
+        identity,
+        'prefix'
+      ),
+  }
 }
 
 function createPlaceholderBundle(storage, overrides = {}) {
@@ -370,6 +390,47 @@ describe('local-ai federated bundle helper', () => {
     await expect(storage.readBuffer(summary.artifactPath)).resolves.toEqual(
       adapterBuffer
     )
+  })
+
+  it('uses identity-grade Idena signatures when signer callbacks are available', async () => {
+    const signer = createIdenaTestSigner(
+      '0x0000000000000000000000000000000000000000000000000000000000000001'
+    )
+
+    await writeManifest(7)
+    await writeTrainingCandidatePackage(7)
+    await writeAdapterRegistration(7, {
+      fileName: 'epoch-7-idena-signature.safetensors',
+      buffer: Buffer.from('adapter-bytes-idena-signature'),
+      trainingConfigHash: 'training-config-idena-signature',
+    })
+
+    const federated = createLocalAiFederated({
+      logger: mockLogger(),
+      storage,
+      getIdentity: () => signer.address,
+      signPayload: signer.signPayload,
+      verifySignature: signer.verifySignature,
+    })
+    const summary = await federated.buildUpdateBundle(7)
+    const bundle = await storage.readJson(summary.bundlePath)
+
+    expect(summary).toMatchObject({
+      identity: signer.address,
+      signed: true,
+    })
+    expect(bundle.signature).toMatchObject({
+      type: 'idena_rpc_signature',
+      signed: true,
+    })
+
+    await expect(
+      federated.importUpdateBundle(summary.bundlePath)
+    ).resolves.toMatchObject({
+      accepted: true,
+      signed: true,
+      identity: signer.address,
+    })
   })
 
   it('blocks bundle export when the identity is on a governance cooldown', async () => {

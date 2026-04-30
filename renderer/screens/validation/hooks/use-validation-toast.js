@@ -18,6 +18,7 @@ import {
 } from '../../../shared/providers/settings-context'
 import {EpochPeriod} from '../../../shared/types'
 import {getNodeBridge} from '../../../shared/utils/node-bridge'
+import {isValidationCountdownNoticeWindow} from '../../../shared/utils/validation-notice'
 import {ValidatonStatusToast} from '../components/toast'
 import {
   canOpenRehearsalValidation,
@@ -254,6 +255,51 @@ export function useValidationToast() {
     router,
   ])
 
+  const showFlipLotteryToast = React.useCallback(() => {
+    if (
+      !isValidationCountdownNoticeWindow({
+        currentPeriod,
+        nextValidation: epoch?.nextValidation,
+      }) ||
+      toast.isActive(EpochPeriod.FlipLottery)
+    ) {
+      return
+    }
+
+    toast({
+      id: EpochPeriod.FlipLottery,
+      duration: null,
+      // eslint-disable-next-line react/display-name
+      render: () => (
+        <ValidatonStatusToast
+          title={t('Idena validation will start soon')}
+          colorScheme="red"
+        >
+          <Button
+            variant="unstyled"
+            onClick={() => {
+              openValidationLottery(router, {isRehearsalNodeSession})
+            }}
+          >
+            {t('Show countdown')}
+          </Button>
+        </ValidatonStatusToast>
+      ),
+    })
+  }, [
+    currentPeriod,
+    epoch?.nextValidation,
+    isRehearsalNodeSession,
+    router,
+    t,
+    toast,
+  ])
+
+  useInterval(
+    showFlipLotteryToast,
+    currentPeriod === EpochPeriod.FlipLottery ? 1000 : null
+  )
+
   useTrackEpochPeriod({
     onChangeCurrentPeriod: (nextPeriod) => {
       for (const toastId of [
@@ -268,28 +314,7 @@ export function useValidationToast() {
       }
     },
     onFlipLottery: () => {
-      if (toast.isActive(EpochPeriod.FlipLottery)) return
-
-      toast({
-        id: EpochPeriod.FlipLottery,
-        duration: null,
-        // eslint-disable-next-line react/display-name
-        render: () => (
-          <ValidatonStatusToast
-            title={t('Idena validation will start soon')}
-            colorScheme="red"
-          >
-            <Button
-              variant="unstyled"
-              onClick={() => {
-                openValidationLottery(router, {isRehearsalNodeSession})
-              }}
-            >
-              {t('Show countdown')}
-            </Button>
-          </ValidatonStatusToast>
-        ),
-      })
+      showFlipLotteryToast()
     },
     onShortSession: () => {
       if (toast.isActive(EpochPeriod.ShortSession)) return

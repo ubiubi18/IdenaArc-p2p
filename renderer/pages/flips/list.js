@@ -61,6 +61,7 @@ import {
 } from '../../shared/components/onboarding'
 import {onboardingShowingStep} from '../../shared/utils/onboarding'
 import {eitherState} from '../../shared/utils/utils'
+import {publicUrl} from '../../shared/utils/public-url'
 import {useFailToast} from '../../shared/hooks/use-toast'
 import {decodedFlipToAiFlip} from '../../screens/validation/ai/test-unit-utils'
 import {
@@ -428,7 +429,7 @@ export default function FlipListPage() {
             justifyContent="center"
             alignSelf="stretch"
           >
-            <Image src="/static/flips-cant-icn.svg" />
+            <Image src={publicUrl('/static/flips-cant-icn.svg')} />
           </Flex>
         )}
 
@@ -477,7 +478,7 @@ export default function FlipListPage() {
                           </FlipOverlayStatus>
                         </FlipOverlay>
                       )}
-                      <Image src="/static/flips-cant-icn.svg" />
+                      <Image src={publicUrl('/static/flips-cant-icn.svg')} />
                     </EmptyFlipBox>
                     <Flex
                       justifyContent="space-between"

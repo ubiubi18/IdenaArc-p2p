@@ -1,6 +1,7 @@
 const {
   buildRehearsalNetworkPayload,
   REHEARSAL_NETWORK_LEAD_SECONDS,
+  REHEARSAL_NETWORK_ONE_DAY_LEAD_SECONDS,
 } = require('./rehearsal-devnet')
 
 describe('rehearsal devnet payloads', () => {
@@ -12,9 +13,23 @@ describe('rehearsal devnet payloads', () => {
     ).toMatchObject({
       nodeCount: 9,
       firstCeremonyLeadSeconds: REHEARSAL_NETWORK_LEAD_SECONDS,
+      delayFirstSessionOneDay: false,
       seedFlipCount: 27,
       connectApp: true,
       connectCountdownSeconds: null,
+    })
+  })
+
+  it('can schedule the first rehearsal session one day later', () => {
+    expect(
+      buildRehearsalNetworkPayload({
+        connectApp: true,
+        delayFirstSessionOneDay: true,
+      })
+    ).toMatchObject({
+      firstCeremonyLeadSeconds: REHEARSAL_NETWORK_ONE_DAY_LEAD_SECONDS,
+      delayFirstSessionOneDay: true,
+      connectApp: true,
     })
   })
 })

@@ -12,11 +12,23 @@ const NEXT_BIN = path.join(ROOT, 'node_modules', 'next', 'dist', 'bin', 'next')
 // eslint-disable-next-line import/no-extraneous-dependencies
 const ELECTRON_BIN = require('electron')
 
+function normalizeDevHost(value) {
+  const host = String(value || '127.0.0.1').trim() || '127.0.0.1'
+
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    throw new Error(
+      `Refusing to expose the legacy Next dev server on ${host}. Use 127.0.0.1, localhost, or ::1.`
+    )
+  }
+
+  return host
+}
+
 const DEV_PORT = Number.parseInt(
   process.env.IDENA_DESKTOP_RENDERER_PORT || '8000',
   10
 )
-const DEV_HOST = process.env.IDENA_DESKTOP_RENDERER_HOST || '127.0.0.1'
+const DEV_HOST = normalizeDevHost(process.env.IDENA_DESKTOP_RENDERER_HOST)
 const DEV_SERVER_URL = `http://${DEV_HOST}:${DEV_PORT}`
 const STARTUP_TIMEOUT_MS = 120000
 const POLL_INTERVAL_MS = 1000

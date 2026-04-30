@@ -58,9 +58,40 @@
         "status": {"enum": ["draft", "final"]},
         "humanVsAiGap": {"type": "string"},
         "capabilityTags": {"type": "array", "items": {"type": "string"}},
-        "suggestedAdapterTarget": {"type": "string"}
+        "suggestedAdapterTarget": {"type": "string"},
+        "actionButtonComparison": {
+          "type": "object",
+          "properties": {
+            "protocol": {"const": "idena-arc-action-button-comparison-v0"},
+            "rule": {"type": "string"},
+            "buttons": {
+              "type": "array",
+              "items": {
+                "allOf": [
+                  {"$ref": "#/$defs/actionButtonDescription"},
+                  {
+                    "type": "object",
+                    "properties": {
+                      "usedBy": {
+                        "type": "object",
+                        "properties": {
+                          "human": {"type": "boolean"},
+                          "localAi": {"type": "boolean"}
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
       }
-    }
+    },
+    "localAiGameplayAnnotation": {"$ref": "#/$defs/gameplayAnnotation"},
+    "humanReplayAnnotation": {"$ref": "#/$defs/replayAnnotation"},
+    "frameContext": {"$ref": "#/$defs/frameContext"},
+    "annotationValidation": {"$ref": "#/$defs/annotationValidation"}
   },
   "$defs": {
     "sha256Prefixed": {
@@ -75,12 +106,110 @@
         "status": {"enum": ["draft", "final"]},
         "attemptedHypotheses": {"type": "array", "items": {"type": "string"}},
         "evidenceUsed": {"type": "array", "items": {"type": "string"}},
-        "uncertaintyReducingActions": {"type": "array", "items": {"type": "string"}},
+        "uncertaintyReducingActions": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
         "repeatedLoops": {"type": "array", "items": {"type": "string"}},
         "failedAbstractions": {"type": "array", "items": {"type": "string"}},
         "finalKnownState": {"type": "string"},
         "stopReason": {"type": "string"},
         "missingCapability": {"type": "string"}
+      }
+    },
+    "noemonStyleAnnotation": {
+      "type": "object",
+      "required": ["protocol"],
+      "properties": {
+        "protocol": {"const": "idena-arc-noemon-style-annotation-v0"},
+        "role": {"type": "string"},
+        "summary": {"type": "string"},
+        "gridSize": {"type": "string"},
+        "invariants": {"type": "array", "items": {"type": "string"}},
+        "ruleHypothesis": {"type": "string"},
+        "transformationAlgorithm": {"type": "string"},
+        "actionPolicy": {"type": "string"},
+        "rejectedAlternatives": {"type": "array", "items": {"type": "string"}},
+        "evidenceEvents": {"type": "array", "items": {"type": "object"}},
+        "filledFieldCount": {"type": "integer", "minimum": 0}
+      }
+    },
+    "compression": {
+      "type": "object",
+      "properties": {
+        "protocol": {"const": "idena-arc-explanation-compression-v0"},
+        "sourceTextHash": {"type": ["string", "null"]},
+        "compressedText": {"type": "string"},
+        "compressedTextHash": {"type": ["string", "null"]},
+        "lossy": {"type": "boolean"}
+      }
+    },
+    "gameplayAnnotation": {
+      "type": "object",
+      "properties": {
+        "protocol": {"const": "idena-arc-local-ai-gameplay-annotation-v0"},
+        "attemptedActions": {"type": "array", "items": {"type": "object"}},
+        "actionButtonDescriptions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/actionButtonDescription"}
+        },
+        "explanationText": {"type": "string"},
+        "structuredExplanation": {"$ref": "#/$defs/noemonStyleAnnotation"},
+        "compression": {"$ref": "#/$defs/compression"},
+        "structuredCompression": {"$ref": "#/$defs/compression"}
+      }
+    },
+    "replayAnnotation": {
+      "type": "object",
+      "properties": {
+        "protocol": {"const": "idena-arc-human-replay-annotation-v0"},
+        "replayActions": {"type": "array", "items": {"type": "object"}},
+        "actionButtonDescriptions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/actionButtonDescription"}
+        },
+        "explanationText": {"type": "string"},
+        "structuredExplanation": {"$ref": "#/$defs/noemonStyleAnnotation"},
+        "keyMoments": {"type": "array", "items": {"type": "object"}},
+        "corrections": {"type": "array", "items": {"type": "string"}},
+        "compression": {"$ref": "#/$defs/compression"},
+        "structuredCompression": {"$ref": "#/$defs/compression"}
+      }
+    },
+    "actionButtonDescription": {
+      "type": "object",
+      "properties": {
+        "protocol": {"const": "idena-arc-action-button-description-v0"},
+        "action": {"type": "string"},
+        "buttonLabel": {"type": "string"},
+        "keys": {"type": "array", "items": {"type": "string"}},
+        "description": {"type": "string"}
+      }
+    },
+    "frameContext": {
+      "type": "object",
+      "properties": {
+        "protocol": {"const": "idena-arc-compact-frame-context-v0"},
+        "source": {"type": "string"},
+        "gameId": {"type": "string"},
+        "entryCount": {"type": "integer", "minimum": 0},
+        "actionCount": {"type": "integer", "minimum": 0},
+        "initial": {"type": ["object", "null"]},
+        "final": {"type": ["object", "null"]},
+        "milestones": {"type": "array", "items": {"type": "object"}},
+        "actionTrace": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "annotationValidation": {
+      "type": "object",
+      "properties": {
+        "protocol": {"const": "idena-arc-annotation-validation-v0"},
+        "strategy": {"type": "string"},
+        "status": {"enum": ["usable-for-training", "needs-more-annotation"]},
+        "readinessScore": {"type": "number", "minimum": 0, "maximum": 1},
+        "checks": {"type": "array", "items": {"type": "object"}},
+        "feedback": {"type": "array", "items": {"type": "string"}},
+        "replayPrefixTask": {"type": "object"}
       }
     }
   }

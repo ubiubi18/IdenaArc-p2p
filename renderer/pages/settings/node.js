@@ -74,7 +74,9 @@ function normalizeDevnetStatus(value) {
       nodeCount: 0,
       nodes: [],
       countdownSeconds: null,
+      firstCeremonyLeadSeconds: null,
       firstCeremonyAt: null,
+      scheduleMode: null,
       seedSource: null,
       seedRequestedCount: null,
       seedSubmittedCount: null,
@@ -103,6 +105,11 @@ function normalizeDevnetStatus(value) {
         ? value.countdownSeconds
         : null,
     firstCeremonyAt: value.firstCeremonyAt || null,
+    firstCeremonyLeadSeconds:
+      typeof value.firstCeremonyLeadSeconds === 'number'
+        ? value.firstCeremonyLeadSeconds
+        : null,
+    scheduleMode: value.scheduleMode || null,
     networkId: value.networkId || null,
     seedSource: value.seedSource || null,
     seedRequestedCount:
@@ -327,6 +334,9 @@ function NodeSettings() {
   }
 
   const [revealApiKey, setRevealApiKey] = useState(false)
+  const [revealInternalApiKey, setRevealInternalApiKey] = useState(false)
+  const [delayRehearsalSessionOneDay, setDelayRehearsalSessionOneDay] =
+    useState(false)
   const emptyLogMessage = (() => {
     if (!canUseIpcRenderer) {
       return t(
@@ -460,12 +470,18 @@ function NodeSettings() {
 
   const startRehearsalNetwork = ({connectApp = false} = {}) =>
     getNodeBridge().startValidationDevnet(
-      buildRehearsalNetworkPayload({connectApp})
+      buildRehearsalNetworkPayload({
+        connectApp,
+        delayFirstSessionOneDay: delayRehearsalSessionOneDay,
+      })
     )
 
   const restartRehearsalNetwork = ({connectApp = true} = {}) =>
     getNodeBridge().restartValidationDevnet(
-      buildRehearsalNetworkPayload({connectApp})
+      buildRehearsalNetworkPayload({
+        connectApp,
+        delayFirstSessionOneDay: delayRehearsalSessionOneDay,
+      })
     )
 
   return (
@@ -505,6 +521,53 @@ function NodeSettings() {
                 'Built-in node is off. IdenaAI will not start or sync a local node on launch until you enable it.'
               )}
             </Text>
+          )}
+
+          {settings.runInternalNode && !settings.useExternalNode && (
+            <Stack spacing={3}>
+              <SettingsFormControl>
+                <SettingsFormLabel htmlFor="internal-url">
+                  {t('Node address')}
+                </SettingsFormLabel>
+                <Input
+                  id="internal-url"
+                  value={`http://127.0.0.1:${settings.internalPort}`}
+                  isReadOnly
+                />
+              </SettingsFormControl>
+              <SettingsFormControl>
+                <SettingsFormLabel htmlFor="internal-key">
+                  {t('Built-in node API key')}
+                </SettingsFormLabel>
+                <InputGroup>
+                  <Input
+                    id="internal-key"
+                    value={settings.internalApiKey || ''}
+                    type={revealInternalApiKey ? 'text' : 'password'}
+                    isReadOnly
+                  />
+                  <InputRightElement w="6" h="6" m="1">
+                    <IconButton
+                      size="xs"
+                      aria-label={
+                        revealInternalApiKey
+                          ? t('Hide built-in node API key')
+                          : t('Show built-in node API key')
+                      }
+                      icon={revealInternalApiKey ? <EyeOffIcon /> : <EyeIcon />}
+                      bg={revealInternalApiKey ? 'gray.300' : 'white'}
+                      fontSize={20}
+                      _hover={{
+                        bg: revealInternalApiKey ? 'gray.300' : 'white',
+                      }}
+                      onClick={() =>
+                        setRevealInternalApiKey(!revealInternalApiKey)
+                      }
+                    />
+                  </InputRightElement>
+                </InputGroup>
+              </SettingsFormControl>
+            </Stack>
           )}
 
           <Stack isInline spacing={3} align="center">
@@ -642,6 +705,28 @@ function NodeSettings() {
               </Text>
             </Box>
 
+            <Stack isInline spacing={4} align="center">
+              <Box>
+                <Switch
+                  isChecked={delayRehearsalSessionOneDay}
+                  isDisabled={isStartingDevnet}
+                  onChange={(event) =>
+                    setDelayRehearsalSessionOneDay(event.target.checked)
+                  }
+                />
+              </Box>
+              <Box>
+                <Text fontWeight={500}>
+                  {t('Start first rehearsal session one day later')}
+                </Text>
+                <Text color="muted">
+                  {t(
+                    'Use this for ARC-AGI integration tests when you need the private network online but do not want to enter the validation session immediately. Applies to the next start or restart.'
+                  )}
+                </Text>
+              </Box>
+            </Stack>
+
             <Stack
               spacing={3}
               borderWidth="1px"
@@ -693,6 +778,11 @@ function NodeSettings() {
                     <Text color="muted">
                       {t('First ceremony starts at')}:{' '}
                       {devnetStatus.firstCeremonyAt}
+                    </Text>
+                  )}
+                  {devnetStatus.scheduleMode === 'one-day-delay' && (
+                    <Text color="muted">
+                      {t('Schedule mode')}: {t('first session one day later')}
                     </Text>
                   )}
                   {typeof devnetStatus.countdownSeconds === 'number' && (

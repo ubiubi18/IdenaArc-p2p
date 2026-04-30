@@ -80,7 +80,16 @@ Per participant:
 - `humanRuleAnnotation`: post-session human explanation of discovered rules
 - `aiSelfAnnotation`: local AI explanation of hypotheses, failures, and stop
   condition
+- `localAiGameplayAnnotation`: local AI gameplay explanation plus a
+  Noemon-style structured summary, invariants, action policy, and rejected
+  alternatives
+- `humanReplayAnnotation`: human replay explanation plus the same structured
+  fields for replay/audit training
 - `comparisonAnnotation`: human comparison between human play and AI play
+- `frameContext`: compact replay-derived frame metadata, action trace, and
+  milestone snapshots for training without rereading the full JSONL
+- `annotationValidation`: deterministic local checks that score whether the
+  annotation has enough explanation, policy, evidence, and replay consistency
 - `trainingExample`: local-only compact adapter-training example derived from a
   finalized verified annotation
 
@@ -117,6 +126,24 @@ Minimum fields:
 The useful training target is the compact explanation: what concept let the
 human stop brute-forcing and start solving.
 
+## Noemon-Style Annotation Loop
+
+IdenaArc stores a light-weight version of the Noemon reasoner/validator pattern
+for both local-AI gameplay and human replay annotations:
+
+- `summary`: concise current rule or policy hypothesis
+- `gridSize`: how size/frame dimensions matter, if known
+- `invariants`: preserved facts observed across replay states
+- `ruleHypothesis` / `transformationAlgorithm`: explicit causal rule text
+- `actionPolicy`: how the next action is selected from the replay state
+- `rejectedAlternatives`: hypotheses that were tested and ruled out
+- `evidenceEvents`: replay-linked moments supporting the hypothesis
+
+The local deterministic validator does not replace model judging. It prepares
+replay-prefix tasks and records whether action hints in the explanation are
+consistent with the verified trace. Later model validators can consume the same
+record and compare predicted actions through sidecar replay.
+
 ## AI Self-Annotation
 
 The local AI should produce a separate post-run report:
@@ -145,6 +172,7 @@ Training inputs:
 - AI self-annotations
 - comparison annotations
 - rejected hypotheses and corrections
+- compact frame context and replay-prefix validation tasks
 
 Training objective:
 

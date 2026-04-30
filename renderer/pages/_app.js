@@ -4,8 +4,6 @@ import Head from 'next/head'
 import {useRouter} from 'next/router'
 import {ChakraProvider, extendTheme} from '@chakra-ui/react'
 import GoogleFonts from 'next-google-fonts'
-// eslint-disable-next-line import/no-extraneous-dependencies
-import 'tui-image-editor/dist/tui-image-editor.css'
 import '../i18n'
 import {QueryClientProvider} from 'react-query'
 import {theme} from '../shared/theme'
@@ -27,6 +25,7 @@ import {
   syncSharedGlobal,
 } from '../shared/utils/shared-global'
 import {getBrowserDevLocalAiBridge} from '../shared/utils/local-ai-browser-dev-bridge'
+import {publicUrl} from '../shared/utils/public-url'
 
 function hasRealBridge(bridge = {}) {
   return Boolean(
@@ -113,10 +112,23 @@ function syncLegacyBridgeGlobals(bridge = {}) {
       commitSalt: empty,
       revealSalt: empty,
       computeFinalSeed: empty,
+      prepareArcAgiRuntime: empty,
       generateGame: empty,
       submitTrace: empty,
+      previewTrace: empty,
       verifyTraceBundle: empty,
       uploadTraceBundle: empty,
+    }
+  }
+
+  if (!global.p2pArtifacts) {
+    const empty = async () => ({ok: false, status: 'unavailable'})
+    global.p2pArtifacts = {
+      bridgeMode: 'browser_stub',
+      exportSignedArtifact: empty,
+      verifySignedArtifact: empty,
+      publishArtifactToIpfs: empty,
+      importArtifactByCid: empty,
     }
   }
 
@@ -227,6 +239,10 @@ function syncLegacyBridgeGlobals(bridge = {}) {
     global.localAi = browserDevLocalAiBridge
   }
 
+  if (bridgeGlobals.p2pArtifacts) {
+    global.p2pArtifacts = bridgeGlobals.p2pArtifacts
+  }
+
   if (Number(bridgeGlobals.totalSystemMemoryBytes) > 0) {
     global.totalSystemMemoryBytes = Number(bridgeGlobals.totalSystemMemoryBytes)
   }
@@ -238,6 +254,7 @@ function syncLegacyBridgeGlobals(bridge = {}) {
   syncSharedGlobal('aiTestUnit', global.aiTestUnit)
   syncSharedGlobal('idenaArc', global.idenaArc)
   syncSharedGlobal('localAi', global.localAi)
+  syncSharedGlobal('p2pArtifacts', global.p2pArtifacts)
   syncSharedGlobal('totalSystemMemoryBytes', 0)
   syncSharedGlobal('appVersion', APP_VERSION_FALLBACK)
   syncSharedGlobal('isDev', false)
@@ -284,7 +301,7 @@ export default function App({Component, err, ...pageProps}) {
     <>
       <GoogleFonts href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
       <Head>
-        <link href="/static/scrollbars.css" rel="stylesheet" />
+        <link href={publicUrl('/static/scrollbars.css')} rel="stylesheet" />
       </Head>
 
       <ChakraProvider theme={extendTheme(theme)}>

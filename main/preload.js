@@ -1473,8 +1473,12 @@ const aiSolverBridge = Object.freeze({
 function sanitizeIdenaArcPayload(value) {
   const normalized = toIpcCloneable(value)
   const blockedKeys = new Set([
+    'nodeKey',
+    'nodeKeyHex',
+    'private_key',
     'privateKey',
     'privateKeyHex',
+    'signer_private_key',
     'signerPrivateKey',
     'signerPrivateKeyHex',
   ])
@@ -1520,10 +1524,47 @@ const idenaArcBridge = Object.freeze({
       'idenaArc.computeFinalSeed',
       sanitizeIdenaArcPayload(payload)
     ),
+  prepareArcAgiRuntime: (payload) =>
+    invokeCloneable(
+      'idenaArc.prepareArcAgiRuntime',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  listArcAgiPublicGames: (payload) =>
+    invokeCloneable(
+      'idenaArc.listArcAgiPublicGames',
+      sanitizeIdenaArcPayload(payload)
+    ),
   generateGame: (payload) =>
     invokeCloneable('idenaArc.generateGame', sanitizeIdenaArcPayload(payload)),
   submitTrace: (payload) =>
     invokeCloneable('idenaArc.submitTrace', sanitizeIdenaArcPayload(payload)),
+  previewTrace: (payload) =>
+    invokeCloneable('idenaArc.previewTrace', sanitizeIdenaArcPayload(payload)),
+  runLocalAiAttempt: (payload) =>
+    invokeCloneable(
+      'idenaArc.runLocalAiAttempt',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  reviewTeacherJourney: (payload) =>
+    invokeCloneable(
+      'idenaArc.reviewTeacherJourney',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  compressTeacherFeedback: (payload) =>
+    invokeCloneable(
+      'idenaArc.compressTeacherFeedback',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  finalizeTeacherJourney: (payload) =>
+    invokeCloneable(
+      'idenaArc.finalizeTeacherJourney',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  submitArcAgiScorecard: (payload) =>
+    invokeCloneable(
+      'idenaArc.submitArcAgiScorecard',
+      sanitizeIdenaArcPayload(payload)
+    ),
   verifyTraceBundle: (payload) =>
     invokeCloneable(
       'idenaArc.verifyTraceBundle',
@@ -1552,6 +1593,30 @@ const idenaArcBridge = Object.freeze({
   uploadTraceBundle: (payload) =>
     invokeCloneable(
       'idenaArc.uploadTraceBundle',
+      sanitizeIdenaArcPayload(payload)
+    ),
+})
+
+const p2pArtifactsBridge = Object.freeze({
+  bridgeMode: 'electron',
+  exportSignedArtifact: (payload) =>
+    invokeCloneable(
+      'p2pArtifacts.exportSignedArtifact',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  verifySignedArtifact: (payload) =>
+    invokeCloneable(
+      'p2pArtifacts.verifySignedArtifact',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  publishArtifactToIpfs: (payload) =>
+    invokeCloneable(
+      'p2pArtifacts.publishArtifactToIpfs',
+      sanitizeIdenaArcPayload(payload)
+    ),
+  importArtifactByCid: (payload) =>
+    invokeCloneable(
+      'p2pArtifacts.importArtifactByCid',
       sanitizeIdenaArcPayload(payload)
     ),
 })
@@ -1772,6 +1837,7 @@ const bridge = {
     aiTestUnit: aiTestUnitBridge,
     idenaArc: idenaArcBridge,
     localAi: localAiBridge,
+    p2pArtifacts: p2pArtifactsBridge,
     openExternal: (url) =>
       invokeCloneable('shell.openExternal.safe', {url: String(url || '')}),
     logger: consoleLogger,

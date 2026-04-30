@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena.io/schemas/idena-p2p-artifact-envelope-v1.schema.json",
+  "title": "Idena P2P Artifact Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "version",
+    "artifactType",
+    "createdAt",
+    "producerAddress",
+    "payloadHash",
+    "sourceHashes",
+    "attachments",
+    "releasePolicy",
+    "privateByDefault",
+    "payload",
+    "signature"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "idena-p2p-artifact-envelope-v1"
+    },
+    "version": {
+      "const": 1
+    },
+    "artifactType": {
+      "enum": [
+        "arc-trace-bundle",
+        "arc-annotation-bundle",
+        "arc-training-dataset",
+        "local-ai-update-bundle",
+        "round-manifest"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producerAddress": {
+      "type": "string",
+      "pattern": "^0x[a-fA-F0-9]{40}$"
+    },
+    "producerIdentityStatus": {
+      "type": ["string", "null"]
+    },
+    "payloadHash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "sourceHashes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "file",
+          "sha256",
+          "sizeBytes",
+          "encoding",
+          "contentBase64"
+        ],
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6291456
+          },
+          "encoding": {
+            "const": "base64"
+          },
+          "contentBase64": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "releasePolicy": {
+      "const": "private-by-default-explicit-publish-only"
+    },
+    "privateByDefault": {
+      "const": true
+    },
+    "payload": {
+      "type": "object"
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "format",
+        "signed",
+        "address",
+        "message",
+        "messageHash",
+        "value"
+      ],
+      "properties": {
+        "type": {
+          "const": "idena-node-dna-sign-v1"
+        },
+        "format": {
+          "const": "prefix"
+        },
+        "signed": {
+          "const": true
+        },
+        "address": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$"
+        },
+        "message": {
+          "type": "string"
+        },
+        "messageHash": {
+          "type": "string",
+          "pattern": "^keccak256:[a-f0-9]{64}$"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{130}$"
+        }
+      }
+    },
+    "cid": {
+      "type": ["string", "null"]
+    }
+  }
+}

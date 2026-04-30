@@ -57,6 +57,56 @@ function cleanRendererBuildOutput() {
   })
 }
 
+function listHtmlFiles(dirPath) {
+  return fs.readdirSync(dirPath, {withFileTypes: true}).flatMap((entry) => {
+    const entryPath = path.join(dirPath, entry.name)
+
+    if (entry.isDirectory()) {
+      return listHtmlFiles(entryPath)
+    }
+
+    return entry.isFile() && entry.name.endsWith('.html') ? [entryPath] : []
+  })
+}
+
+function htmlAssetPrefix(outDir, htmlFilePath) {
+  const relativeRoot = path.relative(path.dirname(htmlFilePath), outDir)
+
+  if (!relativeRoot) {
+    return './'
+  }
+
+  return `${relativeRoot.split(path.sep).join('/')}/`
+}
+
+function rewriteHtmlAssetPaths() {
+  const outDir = path.join(projectRoot, 'renderer', 'out')
+
+  if (!fs.existsSync(outDir)) {
+    return
+  }
+
+  listHtmlFiles(outDir).forEach((htmlFilePath) => {
+    const prefix = htmlAssetPrefix(outDir, htmlFilePath)
+    const html = fs.readFileSync(htmlFilePath, 'utf8')
+    const rewritten = html
+      .replace(/(href|src)="\/(?:_next|static)\//g, (match, attr) =>
+        match.replace(`${attr}="/`, `${attr}="${prefix}`)
+      )
+      .replace(/"href":"\/(?:_next|static)\//g, (match) =>
+        match.replace('"href":"/', `"href":"${prefix}`)
+      )
+      .replace(/"src":"\/(?:_next|static)\//g, (match) =>
+        match.replace('"src":"/', `"src":"${prefix}`)
+      )
+
+    if (rewritten !== html) {
+      fs.writeFileSync(htmlFilePath, rewritten)
+    }
+  })
+}
+
 cleanRendererBuildOutput()
 runNext(['build', 'renderer'])
 runNext(['export', 'renderer'])
+rewriteHtmlAssetPaths()

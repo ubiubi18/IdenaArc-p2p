@@ -5,6 +5,7 @@ import {QueryClient} from 'react-query'
 import i18n from '../../i18n'
 import {EpochPeriod} from '../types'
 import bundledLegacyKeywords from '../../../idena-go/keywords/keywords.json'
+import {isValidationCountdownNoticeWindow} from './validation-notice'
 
 dayjs.extend(duration)
 dayjs.extend(relativeTime)
@@ -251,7 +252,8 @@ export function showWindowNotification(title, notificationBody, onclick) {
 
 export function shouldShowUpcomingValidationNotification(
   epoch,
-  upcomingValidationEpoch
+  upcomingValidationEpoch,
+  options = {}
 ) {
   if (!epoch) {
     return false
@@ -259,7 +261,15 @@ export function shouldShowUpcomingValidationNotification(
   const isFlipLottery = epoch.currentPeriod === EpochPeriod.FlipLottery
   const currentEpoch = epoch.epoch
   const notificationShown = currentEpoch + 1 === upcomingValidationEpoch
-  return isFlipLottery && !notificationShown
+  return (
+    isFlipLottery &&
+    !notificationShown &&
+    isValidationCountdownNoticeWindow({
+      currentPeriod: epoch.currentPeriod,
+      nextValidation: epoch.nextValidation,
+      ...options,
+    })
+  )
 }
 
 export function calculateInvitationRewardRatio(
