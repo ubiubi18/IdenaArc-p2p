@@ -250,6 +250,23 @@ describe('idena-arc manager', () => {
       traceBundle: submitted.bundle,
       humanRuleAnnotation: {
         confirmedRules: 'The target is reached by moving on the grid.',
+        evidenceEvents: [
+          {
+            actionIndex: 0,
+            description:
+              'Marker (1) showed the plus sign changed the figure orientation.',
+            visualMarker: {
+              markerId: 'plus-1',
+              label: '1',
+              x: 2,
+              y: 3,
+              frameWidth: 5,
+              frameHeight: 5,
+              role: 'causal-cue',
+              note: 'Touching the plus sign rotated the figure.',
+            },
+          },
+        ],
         recognitionMoment: {
           actionIndex: 1,
           description: 'The score increased after moving toward the target.',
@@ -283,7 +300,22 @@ describe('idena-arc manager', () => {
           actionPolicy: 'The successful prefix is ACTION4 followed by ACTION2.',
           rejectedAlternatives: 'Ignoring score deltas was less useful.',
         },
-        keyMoments: 'Action 1 exposed the target direction.',
+        keyMoments: [
+          'Action 1 exposed the target direction.',
+          {
+            actionIndex: 1,
+            description: 'Marker (2) showed the target/keyhole.',
+            visualMarker: {
+              markerId: 'keyhole-2',
+              label: '2',
+              x: 4,
+              y: 1,
+              frameWidth: 5,
+              frameHeight: 5,
+              note: 'The rotated figure fit here.',
+            },
+          },
+        ],
         corrections: 'Try target-directed movement before random exploration.',
       },
       comparisonAnnotation: {
@@ -339,6 +371,22 @@ describe('idena-arc manager', () => {
             humanFeedback:
               'Try the visible target rule before sampling random actions.',
             quickMarks: ['missed-rule'],
+          },
+        ],
+        visualAnnotations: [
+          {
+            actionIndex: 0,
+            description:
+              'Marker (1) links the visual plus sign to the rotation clue.',
+            visualMarker: {
+              markerId: 'plus-1',
+              label: '1',
+              x: 2,
+              y: 3,
+              frameWidth: 5,
+              frameHeight: 5,
+              note: 'Same marker as the human proof event.',
+            },
           },
         ],
         providerAnnotationDrafts: [
@@ -428,7 +476,32 @@ describe('idena-arc manager', () => {
         expect.objectContaining({action: 'ACTION4', buttonLabel: 'Right'}),
         expect.objectContaining({action: 'ACTION2', buttonLabel: 'Down'}),
       ]),
+      keyMoments: expect.arrayContaining([
+        expect.objectContaining({
+          description: 'Marker (2) showed the target/keyhole.',
+          visualMarker: expect.objectContaining({
+            protocol: 'idena-arc-visual-marker-v0',
+            markerId: 'keyhole-2',
+            label: '2',
+            x: 4,
+            y: 1,
+          }),
+        }),
+      ]),
     })
+    expect(final.annotation.humanRuleAnnotation.evidenceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actionIndex: 0,
+          visualMarker: expect.objectContaining({
+            protocol: 'idena-arc-visual-marker-v0',
+            markerId: 'plus-1',
+            label: '1',
+            role: 'causal-cue',
+          }),
+        }),
+      ])
+    )
     expect(final.annotation.teacherJourney).toMatchObject({
       protocol: 'idena-arc-teacher-journey-v1',
       humanAttempt: {
@@ -441,6 +514,14 @@ describe('idena-arc manager', () => {
           stopReason: 'action_cap',
         }),
       ],
+      visualAnnotations: expect.arrayContaining([
+        expect.objectContaining({
+          visualMarker: expect.objectContaining({
+            markerId: 'plus-1',
+            label: '1',
+          }),
+        }),
+      ]),
     })
     expect(final.annotation.providerAnnotationDrafts[0]).toMatchObject({
       provider: 'openai',

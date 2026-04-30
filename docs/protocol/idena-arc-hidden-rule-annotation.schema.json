@@ -40,7 +40,10 @@
         "status": {"enum": ["draft", "final"]},
         "ruleHypotheses": {"type": "array", "items": {"type": "string"}},
         "confirmedRules": {"type": "array", "items": {"type": "string"}},
-        "evidenceEvents": {"type": "array", "items": {"type": "object"}},
+        "evidenceEvents": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidenceEvent"}
+        },
         "recognitionMoment": {"type": "object"},
         "wrongHypotheses": {"type": "array", "items": {"type": "string"}},
         "strategyChange": {"type": "string"},
@@ -130,7 +133,10 @@
         "transformationAlgorithm": {"type": "string"},
         "actionPolicy": {"type": "string"},
         "rejectedAlternatives": {"type": "array", "items": {"type": "string"}},
-        "evidenceEvents": {"type": "array", "items": {"type": "object"}},
+        "evidenceEvents": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidenceEvent"}
+        },
         "filledFieldCount": {"type": "integer", "minimum": 0}
       }
     },
@@ -170,7 +176,10 @@
         },
         "explanationText": {"type": "string"},
         "structuredExplanation": {"$ref": "#/$defs/noemonStyleAnnotation"},
-        "keyMoments": {"type": "array", "items": {"type": "object"}},
+        "keyMoments": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidenceEvent"}
+        },
         "corrections": {"type": "array", "items": {"type": "string"}},
         "compression": {"$ref": "#/$defs/compression"},
         "structuredCompression": {"$ref": "#/$defs/compression"}
@@ -184,6 +193,32 @@
         "buttonLabel": {"type": "string"},
         "keys": {"type": "array", "items": {"type": "string"}},
         "description": {"type": "string"}
+      }
+    },
+    "evidenceEvent": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "actionIndex": {"type": ["integer", "null"], "minimum": 0},
+        "t_ms": {"type": ["integer", "null"], "minimum": 0},
+        "description": {"type": "string"},
+        "observationHash": {"type": "string"},
+        "visualMarker": {"$ref": "#/$defs/visualMarker"}
+      }
+    },
+    "visualMarker": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "protocol": {"const": "idena-arc-visual-marker-v0"},
+        "markerId": {"type": "string"},
+        "label": {"type": "string"},
+        "x": {"type": ["integer", "null"], "minimum": 0},
+        "y": {"type": ["integer", "null"], "minimum": 0},
+        "frameWidth": {"type": ["integer", "null"], "minimum": 1},
+        "frameHeight": {"type": ["integer", "null"], "minimum": 1},
+        "role": {"type": "string"},
+        "note": {"type": "string"}
       }
     },
     "frameContext": {

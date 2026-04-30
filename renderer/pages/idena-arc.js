@@ -54,11 +54,13 @@ import {
 
 const DEFAULT_ACTIONS = ['move_right', 'move_down', 'move_down'].join('\n')
 const DEFAULT_PLAY_DURATION_MS = 3 * 60 * 1000
-const ARC_INPUT_DEBOUNCE_MS = 90
+const ARC_INPUT_DEBOUNCE_MS = 500
+const ARC_HELD_KEY_REPEAT_MS = 500
 const TEACHER_JOURNEY_PROTOCOL = 'idena-arc-teacher-journey-v1'
 const LOCAL_AI_ATTEMPT_ACTION_CAP = 64
 const LOCAL_AI_ATTEMPT_REPEATED_STATE_CAP = 4
 const LOCAL_AI_ATTEMPT_WALL_MS = 5 * 60 * 1000
+const LOCAL_AI_STEP_TIMEOUT_MS = 12000
 const ARC_PUBLIC_GAMES = [
   {id: 'ls20', label: 'ls20 · Agent reasoning'},
   {id: 'ft09', label: 'ft09 · Elementary logic'},
@@ -103,6 +105,24 @@ const ARC_COLOR_PALETTE = [
   '#01ff70',
   '#85144b',
   '#001f3f',
+]
+const ARC_DISPLAY_COLOR_PALETTE = [
+  '#11151c',
+  '#3f6ed8',
+  '#d55353',
+  '#5fbf72',
+  '#d8b44b',
+  '#868d96',
+  '#b852c8',
+  '#d27a47',
+  '#76c4da',
+  '#873449',
+  '#f3efe2',
+  '#4fb5aa',
+  '#8762cb',
+  '#72c874',
+  '#764268',
+  '#1e3555',
 ]
 const LOCAL_ACTION_DELTAS = {
   move_up: {x: 0, y: -1},
@@ -656,6 +676,77 @@ function buildActionButtonComparison(humanActions, aiActions) {
   }
 }
 
+function visualAnnotationTitle(marker) {
+  const label = String(marker && marker.label ? marker.label : marker?.id || '')
+    .trim()
+    .slice(0, 8)
+  return label ? `(${label})` : '(?)'
+}
+
+function visualAnnotationDescription(marker) {
+  const title = visualAnnotationTitle(marker)
+  const note = String(marker && marker.note ? marker.note : '').trim()
+  const coordinate =
+    Number.isFinite(Number(marker && marker.x)) &&
+    Number.isFinite(Number(marker && marker.y))
+      ? `cell ${Math.trunc(Number(marker.x))},${Math.trunc(Number(marker.y))}`
+      : 'marked cell'
+  const actionText =
+    Number.isFinite(Number(marker && marker.actionIndex)) &&
+    Number(marker.actionIndex) >= 0
+      ? ` after action ${Math.trunc(Number(marker.actionIndex)) + 1}`
+      : ''
+
+  return `${title} ${note || 'visual cue'} at ${coordinate}${actionText}`
+}
+
+function evidenceEventsFromText(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((description) => ({description}))
+}
+
+function visualAnnotationEvidenceEvents(markers) {
+  return (Array.isArray(markers) ? markers : [])
+    .slice(0, 12)
+    .map((marker, index) => {
+      const x = Number(marker && marker.x)
+      const y = Number(marker && marker.y)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+
+      return {
+        actionIndex:
+          Number.isFinite(Number(marker.actionIndex)) &&
+          Number(marker.actionIndex) >= 0
+            ? Math.trunc(Number(marker.actionIndex))
+            : null,
+        description: visualAnnotationDescription(marker),
+        visualMarker: {
+          protocol: 'idena-arc-visual-marker-v0',
+          markerId: String(marker.id || index + 1),
+          label: String(marker.label || index + 1),
+          x: Math.max(0, Math.trunc(x)),
+          y: Math.max(0, Math.trunc(y)),
+          frameWidth:
+            Number.isFinite(Number(marker.frameWidth)) &&
+            Number(marker.frameWidth) > 0
+              ? Math.trunc(Number(marker.frameWidth))
+              : null,
+          frameHeight:
+            Number.isFinite(Number(marker.frameHeight)) &&
+            Number(marker.frameHeight) > 0
+              ? Math.trunc(Number(marker.frameHeight))
+              : null,
+          role: String(marker.role || 'evidence'),
+          note: String(marker.note || '').slice(0, 600),
+        },
+      }
+    })
+    .filter(Boolean)
+}
+
 function formatActionButtonDescriptionList(descriptions) {
   return (Array.isArray(descriptions) ? descriptions : [])
     .map((item) => {
@@ -826,6 +917,36 @@ function isTypingTarget(target) {
       (target.isContentEditable ||
         ['input', 'select', 'textarea'].includes(tagName))
   )
+}
+
+function shouldAcceptHeldKeyRepeat(event, repeatRef) {
+  if (!event) {
+    return true
+  }
+
+  const now = Date.now()
+  const key = String(event.code || event.key || 'keyboard').trim()
+  const repeatState =
+    repeatRef && repeatRef.current ? repeatRef.current : Object.create(null)
+
+  if (event.repeat !== true) {
+    repeatState[key] = now
+    return true
+  }
+
+  const previousAt = Number(
+    repeatRef && repeatRef.current ? repeatRef.current[key] || 0 : 0
+  )
+
+  if (now - previousAt < ARC_HELD_KEY_REPEAT_MS) {
+    return false
+  }
+
+  if (repeatRef && repeatRef.current) {
+    repeatRef.current[key] = now
+  }
+
+  return true
 }
 
 function arcKeyActionFromEvent(event) {
@@ -1037,6 +1158,28 @@ function aiReplayTimelineFromPreview(preview, prefixCount = 0) {
   )
 
   return timeline.slice(startIndex)
+}
+
+function initialAiReplayTimelineFromGame(game) {
+  const initialState =
+    game && game.initialState ? cloneJson(game.initialState) : null
+
+  if (!initialState) return []
+
+  return [
+    {
+      phase: 'initial',
+      step: 0,
+      t_ms: 0,
+      actionInput: null,
+      state: initialState,
+      stateHash:
+        game.initialStateHash ||
+        `renderer:${simpleHashHex(JSON.stringify(initialState))}`,
+      score: 0,
+      fullReset: true,
+    },
+  ]
 }
 
 function describeAiReplayObservations(preview, prefixCount = 0) {
@@ -1441,6 +1584,10 @@ function normalizeAttemptActions(actions) {
       normalized.confidence = Math.max(0, Math.min(1, item.confidence))
     }
     if (item && typeof item.score === 'number') normalized.score = item.score
+    if (item && item.probeFallback) normalized.probeFallback = true
+    if (item && item.runtimeError) {
+      normalized.runtimeError = String(item.runtimeError)
+    }
 
     return normalized
   })
@@ -1533,6 +1680,7 @@ function buildTeacherJourney({
   teacherRounds,
   compressedTeacherMemory,
   providerAnnotationDrafts,
+  visualAnnotations,
   phase,
 }) {
   return {
@@ -1549,6 +1697,7 @@ function buildTeacherJourney({
     providerAnnotationDrafts: Array.isArray(providerAnnotationDrafts)
       ? providerAnnotationDrafts
       : [],
+    visualAnnotations: visualAnnotationEvidenceEvents(visualAnnotations),
     compressedTeacherMemory: compressedTeacherMemory || null,
   }
 }
@@ -1870,8 +2019,23 @@ async function runLocalAiAttemptWithPreview({
   let preview = null
   let currentState = cloneJson(game.initialState)
   let previousStateHash = game.initialStateHash || null
+  const initialTimeline = initialAiReplayTimelineFromGame(game)
   let stopReason = 'action_cap'
   let lastRuntimeError = ''
+  let usedProbeFallback = false
+  let probeFallbackOnly = false
+
+  if (typeof onProgress === 'function') {
+    onProgress({
+      actions: [],
+      preview: null,
+      timeline: initialTimeline,
+      observationSummary:
+        'Local AI is reading the first screen and choosing its first action.',
+      stopReason: 'thinking',
+      stepIndex: 0,
+    })
+  }
 
   for (let index = 0; index < LOCAL_AI_ATTEMPT_ACTION_CAP; index += 1) {
     if (Date.now() - startedAtMs > LOCAL_AI_ATTEMPT_WALL_MS) {
@@ -1890,39 +2054,72 @@ async function runLocalAiAttemptWithPreview({
     })
     let decision = null
 
-    try {
-      const chatResult = await localBridge.chat({
-        ...localRuntimePayload,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Return strict JSON only. Choose one next ARC/game action.',
-          },
-          {role: 'user', content: prompt},
-        ],
-        responseFormat: {type: 'json_object'},
-        generationOptions: {temperature: 0, num_predict: 160},
-        timeoutMs: 30000,
-      })
-      if (chatResult && chatResult.ok !== false) {
-        decision = parseLocalAiActionDecision(
-          plainTextFromLocalAiResult(chatResult),
-          game,
-          fallback
+    if (probeFallbackOnly) {
+      lastRuntimeError =
+        'Continuing local probe after the model did not answer earlier.'
+    } else {
+      try {
+        const chatResult = await localBridge.chat({
+          ...localRuntimePayload,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Return strict JSON only. Choose one next ARC/game action.',
+            },
+            {role: 'user', content: prompt},
+          ],
+          responseFormat: {type: 'json_object'},
+          generationOptions: {temperature: 0, num_predict: 160},
+          timeoutMs: LOCAL_AI_STEP_TIMEOUT_MS,
+        })
+        if (chatResult && chatResult.ok !== false) {
+          decision = parseLocalAiActionDecision(
+            plainTextFromLocalAiResult(chatResult),
+            game,
+            fallback
+          )
+        } else {
+          lastRuntimeError =
+            (chatResult && (chatResult.lastError || chatResult.error)) ||
+            'Local AI chat returned no action.'
+        }
+      } catch (error) {
+        lastRuntimeError = String(
+          error && error.message ? error.message : error
         )
-      } else {
-        lastRuntimeError =
-          (chatResult && (chatResult.lastError || chatResult.error)) ||
-          'Local AI chat returned no action.'
       }
-    } catch (error) {
-      lastRuntimeError = String(error && error.message ? error.message : error)
     }
 
     if (!decision) {
-      stopReason = 'local_ai_no_action'
-      break
+      usedProbeFallback = true
+      probeFallbackOnly = true
+      decision = normalizeAiActionDecision(
+        {
+          reason: lastRuntimeError
+            ? `Local model did not return a valid action in time (${lastRuntimeError}). Continue with a local systematic probe and observe the replay delta.`
+            : 'Local model did not return a valid action. Continue with a local systematic probe and observe the replay delta.',
+          confidence: 0.12,
+        },
+        game,
+        fallback
+      )
+      decision.probeFallback = true
+      if (lastRuntimeError) decision.runtimeError = lastRuntimeError
+      if (typeof onProgress === 'function') {
+        onProgress({
+          actions: actionItems.slice(),
+          preview,
+          timeline: preview
+            ? aiReplayTimelineFromPreview(preview, 0)
+            : initialTimeline,
+          observationSummary:
+            lastRuntimeError ||
+            'Local model did not return an action; running a local probe.',
+          stopReason: 'probe_fallback',
+          stepIndex: index,
+        })
+      }
     }
 
     const nextAction = {
@@ -1973,6 +2170,7 @@ async function runLocalAiAttemptWithPreview({
         timeline: progressTimeline,
         observationSummary: describeAiReplayObservations(preview, 0),
         stopReason: 'running',
+        stepIndex: index,
       })
     }
 
@@ -1991,18 +2189,26 @@ async function runLocalAiAttemptWithPreview({
   }
 
   const endedAt = new Date().toISOString()
-  const finalTimeline = preview ? aiReplayTimelineFromPreview(preview, 0) : []
+  const finalTimeline = preview
+    ? aiReplayTimelineFromPreview(preview, 0)
+    : initialTimeline
+  let resolvedStopReason = stopReason
+  if (stopReason === 'action_cap' && usedProbeFallback) {
+    resolvedStopReason = 'probe_fallback_cap'
+  } else if (
+    stopReason === 'action_cap' &&
+    actionItems.length < LOCAL_AI_ATTEMPT_ACTION_CAP
+  ) {
+    resolvedStopReason = lastRuntimeError || stopReason
+  }
+
   const attempt = buildAttemptRecord({
     actor: 'local-ai',
     actions: actionItems,
     timeline: finalTimeline,
     preview,
     finalState: currentState,
-    stopReason:
-      stopReason === 'action_cap' &&
-      actionItems.length < LOCAL_AI_ATTEMPT_ACTION_CAP
-        ? lastRuntimeError || stopReason
-        : stopReason,
+    stopReason: resolvedStopReason,
     startedAt,
     endedAt,
     attemptIndex,
@@ -4404,6 +4610,177 @@ function ActionButtonComparisonPanel({humanActions, aiActions}) {
   )
 }
 
+function VisualTeachingMarksPanel({
+  frame,
+  markers,
+  setMarkers,
+  actionTimeline,
+  isDisabled = false,
+}) {
+  const safeMarkers = Array.isArray(markers) ? markers : []
+  const {width, height} = React.useMemo(() => frameDimensions(frame), [frame])
+  const canAnnotate = Boolean(
+    !isDisabled && width > 0 && height > 0 && typeof setMarkers === 'function'
+  )
+
+  const addMarker = React.useCallback(
+    (cell) => {
+      if (!canAnnotate || !cell) return
+
+      setMarkers((current) => {
+        const list = Array.isArray(current) ? current : []
+        const used = new Set(list.map((item) => Number(item.id)))
+        let nextId = 1
+        while (used.has(nextId)) nextId += 1
+
+        const lastActionIndex =
+          Array.isArray(actionTimeline) && actionTimeline.length
+            ? actionTimeline.length - 1
+            : null
+
+        return list.concat({
+          id: nextId,
+          label: String(nextId),
+          x: cell.x,
+          y: cell.y,
+          frameWidth: width,
+          frameHeight: height,
+          actionIndex: lastActionIndex,
+          role: 'evidence',
+          note: '',
+          createdAt: new Date().toISOString(),
+        })
+      })
+    },
+    [actionTimeline, canAnnotate, height, setMarkers, width]
+  )
+
+  const updateMarker = React.useCallback(
+    (id, patch) => {
+      if (typeof setMarkers !== 'function') return
+      setMarkers((current) =>
+        (Array.isArray(current) ? current : []).map((item) =>
+          item.id === id ? {...item, ...patch} : item
+        )
+      )
+    },
+    [setMarkers]
+  )
+
+  const removeMarker = React.useCallback(
+    (id) => {
+      if (typeof setMarkers !== 'function') return
+      setMarkers((current) =>
+        (Array.isArray(current) ? current : []).filter((item) => item.id !== id)
+      )
+    },
+    [setMarkers]
+  )
+
+  return (
+    <Box borderWidth="1px" borderColor="blue.100" borderRadius="md" p={3}>
+      <Flex justify="space-between" gap={3} flexWrap="wrap" mb={3}>
+        <Box>
+          <Text fontWeight={600}>Visual proof marks</Text>
+          <Text color="muted" fontSize="xs">
+            {isDisabled
+              ? 'Tap Done first; then place numbered proof marks on the saved frame.'
+              : 'Click or tap the board to place numbered markers, then explain what each mark revealed.'}
+          </Text>
+        </Box>
+        <Badge colorScheme={safeMarkers.length ? 'blue' : 'gray'}>
+          {safeMarkers.length} mark(s)
+        </Badge>
+      </Flex>
+
+      {width && height ? (
+        <ArcAgiFrameCanvas
+          frame={frame}
+          canAct={false}
+          actionSpace={[]}
+          onAction={() => {}}
+          maxBoardWidth="420px"
+          annotationMode={canAnnotate}
+          annotationMarkers={safeMarkers}
+          onAnnotateCell={addMarker}
+        />
+      ) : (
+        <Box bg="gray.50" borderRadius="md" p={4}>
+          <Text color="muted" fontSize="sm">
+            Finish a run first; the final frame will appear here for visual
+            marks.
+          </Text>
+        </Box>
+      )}
+
+      {safeMarkers.length ? (
+        <Stack spacing={3} mt={3}>
+          {safeMarkers.map((marker) => (
+            <Box
+              key={marker.id}
+              borderWidth="1px"
+              borderColor="gray.100"
+              borderRadius="md"
+              p={3}
+            >
+              <HStack spacing={2} mb={2} flexWrap="wrap">
+                <Badge colorScheme="blue">
+                  {visualAnnotationTitle(marker)}
+                </Badge>
+                <Text color="muted" fontSize="xs">
+                  x {marker.x} · y {marker.y}
+                </Text>
+                <Select
+                  size="sm"
+                  w="auto"
+                  value={
+                    Number.isFinite(Number(marker.actionIndex))
+                      ? String(marker.actionIndex)
+                      : ''
+                  }
+                  onChange={(event) =>
+                    updateMarker(marker.id, {
+                      actionIndex:
+                        event.target.value === ''
+                          ? null
+                          : Number(event.target.value),
+                    })
+                  }
+                >
+                  <option value="">no step</option>
+                  {(Array.isArray(actionTimeline) ? actionTimeline : []).map(
+                    (item, index) => (
+                      <option key={`${item.action}:${index}`} value={index}>
+                        {index + 1}. {actionButtonShortLabel(item.action)}
+                      </option>
+                    )
+                  )}
+                </Select>
+                <SecondaryButton
+                  size="sm"
+                  onClick={() => removeMarker(marker.id)}
+                >
+                  Remove
+                </SecondaryButton>
+              </HStack>
+              <Textarea
+                minH="64px"
+                value={marker.note || ''}
+                onChange={(event) =>
+                  updateMarker(marker.id, {note: event.target.value})
+                }
+                placeholder={`What did ${visualAnnotationTitle(
+                  marker
+                )} show? e.g. + sign rotates figure toward keyhole`}
+              />
+            </Box>
+          ))}
+        </Stack>
+      ) : null}
+    </Box>
+  )
+}
+
 function TeacherLoopPanel({
   teacherStep,
   setTeacherStep,
@@ -4424,6 +4801,8 @@ function TeacherLoopPanel({
   setLocalAiGameplayExplanation,
   humanReplayExplanation,
   setHumanReplayExplanation,
+  visualAnnotations,
+  setVisualAnnotations,
   confirmedRules,
   setConfirmedRules,
   humanVsAiGap,
@@ -4534,9 +4913,43 @@ function TeacherLoopPanel({
   const aiReplayFrame = Array.isArray(aiReplayState && aiReplayState.frame)
     ? aiReplayState.frame
     : []
+  const humanFinalState =
+    humanAttempt && humanAttempt.finalState ? humanAttempt.finalState : null
+  const humanFinalFrame = Array.isArray(
+    humanFinalState && humanFinalState.frame
+  )
+    ? humanFinalState.frame
+    : []
+  const initialFrame = Array.isArray(
+    game && game.initialState && game.initialState.frame
+  )
+    ? game.initialState.frame
+    : []
+  let visualTeachingFrame = initialFrame
+  if (aiReplayFrame.length) {
+    visualTeachingFrame = aiReplayFrame
+  }
+  if (humanFinalFrame.length) {
+    visualTeachingFrame = humanFinalFrame
+  }
   const aiReplayActionLabel = aiReplayPoint
     ? timelinePointAction(aiReplayPoint)
     : 'waiting'
+  const aiReplayStatus = localAiReplay ? localAiReplay.status || '' : ''
+  const aiReplayThinking =
+    busy === 'Draft AI attempt' && aiReplayStatus === 'thinking'
+  const aiReplayStepLabel =
+    localAiReplay && Number.isFinite(Number(localAiReplay.stepIndex))
+      ? `step ${Number(localAiReplay.stepIndex) + 1}`
+      : 'step 1'
+  let aiReplayHeaderText = 'no AI run yet'
+  if (aiReplayThinking) {
+    aiReplayHeaderText = `thinking ${aiReplayStepLabel}`
+  } else if (aiReplayStepCount) {
+    aiReplayHeaderText = `${safeAiReplayIndex}/${aiReplayStepCount} · ${aiReplayActionLabel}`
+  } else if (localAiReplay) {
+    aiReplayHeaderText = aiReplayStatus || 'waiting'
+  }
   const aiReplayProgress =
     aiTimeline.length > 1
       ? (safeAiReplayIndex / Math.max(1, aiTimeline.length - 1)) * 100
@@ -4754,6 +5167,13 @@ function TeacherLoopPanel({
               placeholder="One teachable rule per line"
             />
           </Field>
+          <VisualTeachingMarksPanel
+            frame={visualTeachingFrame}
+            markers={visualAnnotations}
+            setMarkers={setVisualAnnotations}
+            actionTimeline={actionTimeline}
+            isDisabled={!humanAttempt}
+          />
         </Stack>
 
         <Stack spacing={4}>
@@ -4865,9 +5285,7 @@ function TeacherLoopPanel({
                   noOfLines={1}
                   fontVariantNumeric="tabular-nums"
                 >
-                  {aiReplayStepCount
-                    ? `${safeAiReplayIndex}/${aiReplayStepCount} · ${aiReplayActionLabel}`
-                    : 'no AI run yet'}
+                  {aiReplayHeaderText}
                 </Text>
               </HStack>
               <HStack spacing={1}>
@@ -4960,6 +5378,13 @@ function TeacherLoopPanel({
               colorScheme="purple"
               bg="whiteAlpha.200"
             />
+            {localAiReplay &&
+            localAiReplay.observationSummary &&
+            (!showExpertMode || aiReplayThinking || !aiReplayStepCount) ? (
+              <Text mt={2} color="whiteAlpha.700" fontSize="xs">
+                {localAiReplay.observationSummary}
+              </Text>
+            ) : null}
             {showExpertMode &&
             localAiReplay &&
             localAiReplay.observationSummary ? (
@@ -5197,14 +5622,16 @@ function ArcPadButton({control, disabled, onAction, gridArea}) {
         minW={12}
         h={12}
         borderRadius="8px"
-        color={disabled ? 'whiteAlpha.500' : 'white'}
-        bg={disabled ? 'whiteAlpha.100' : '#20232b'}
+        color={disabled ? '#687080' : '#f6f8fb'}
+        bg={disabled ? '#202632' : '#19202b'}
         borderWidth="1px"
-        borderColor={disabled ? 'whiteAlpha.100' : 'whiteAlpha.300'}
+        borderColor={
+          disabled ? 'rgba(255,255,255,.06)' : 'rgba(255,255,255,.18)'
+        }
         boxShadow={
           disabled
-            ? 'inset 0 2px 4px rgba(255, 255, 255, 0.04)'
-            : 'inset 0 2px 5px rgba(255,255,255,.12), 0 5px 0 #11141a'
+            ? 'inset 0 1px 3px rgba(255, 255, 255, 0.04)'
+            : 'inset 0 2px 5px rgba(255,255,255,.10), 0 5px 0 #0d1118'
         }
         transform="translateY(0)"
         transition="transform .08s ease, box-shadow .08s ease, background .12s ease"
@@ -5214,7 +5641,7 @@ function ArcPadButton({control, disabled, onAction, gridArea}) {
           disabled
             ? undefined
             : {
-                bg: '#2b303a',
+                bg: '#222b38',
               }
         }
         _active={
@@ -5223,7 +5650,7 @@ function ArcPadButton({control, disabled, onAction, gridArea}) {
             : {
                 transform: 'translateY(4px)',
                 boxShadow:
-                  'inset 0 2px 5px rgba(255,255,255,.1), 0 1px 0 #11141a',
+                  'inset 0 2px 5px rgba(255,255,255,.08), 0 1px 0 #0d1118',
               }
         }
       />
@@ -5242,15 +5669,15 @@ function ArcGamepad({canAct, actionSpace, onAction}) {
       spacing={6}
       p={4}
       borderWidth="1px"
-      borderColor="whiteAlpha.200"
+      borderColor="rgba(255,255,255,.10)"
       borderRadius="8px"
-      bg="rgba(18, 20, 27, 0.72)"
-      boxShadow="inset 0 1px 0 rgba(255,255,255,.08)"
+      bg="linear-gradient(180deg, rgba(23,29,40,.96), rgba(15,20,29,.96))"
+      boxShadow="inset 0 1px 0 rgba(255,255,255,.08), 0 10px 24px rgba(0,0,0,.18)"
     >
       <Box>
         <HStack justify="space-between" mb={3}>
           <Text
-            color="whiteAlpha.800"
+            color="#d8e0ee"
             fontSize="xs"
             fontWeight={700}
             letterSpacing="0"
@@ -5260,30 +5687,30 @@ function ArcGamepad({canAct, actionSpace, onAction}) {
           </Text>
           <HStack spacing={1}>
             <Kbd
-              bg="whiteAlpha.200"
-              color="whiteAlpha.800"
-              borderColor="whiteAlpha.300"
+              bg="rgba(255,255,255,.09)"
+              color="#d8e0ee"
+              borderColor="rgba(255,255,255,.14)"
             >
               W
             </Kbd>
             <Kbd
-              bg="whiteAlpha.200"
-              color="whiteAlpha.800"
-              borderColor="whiteAlpha.300"
+              bg="rgba(255,255,255,.09)"
+              color="#d8e0ee"
+              borderColor="rgba(255,255,255,.14)"
             >
               A
             </Kbd>
             <Kbd
-              bg="whiteAlpha.200"
-              color="whiteAlpha.800"
-              borderColor="whiteAlpha.300"
+              bg="rgba(255,255,255,.09)"
+              color="#d8e0ee"
+              borderColor="rgba(255,255,255,.14)"
             >
               S
             </Kbd>
             <Kbd
-              bg="whiteAlpha.200"
-              color="whiteAlpha.800"
-              borderColor="whiteAlpha.300"
+              bg="rgba(255,255,255,.09)"
+              color="#d8e0ee"
+              borderColor="rgba(255,255,255,.14)"
             >
               D
             </Kbd>
@@ -5313,14 +5740,14 @@ function ArcGamepad({canAct, actionSpace, onAction}) {
             gridArea="center"
             h={12}
             borderRadius="8px"
-            bg="#11141a"
+            bg="#0f141d"
             borderWidth="1px"
-            borderColor="whiteAlpha.200"
+            borderColor="rgba(255,255,255,.10)"
             align="center"
             justify="center"
             boxShadow="inset 0 2px 5px rgba(0,0,0,.4)"
           >
-            <Box w={3} h={3} borderRadius="full" bg="whiteAlpha.300" />
+            <Box w={3} h={3} borderRadius="full" bg="rgba(255,255,255,.22)" />
           </Flex>
           <ArcPadButton
             gridArea="right"
@@ -5346,14 +5773,14 @@ function ArcGamepad({canAct, actionSpace, onAction}) {
               w={16}
               h={16}
               borderRadius="full"
-              bg={!canAct || !canUse('ACTION5') ? 'whiteAlpha.100' : '#d24b5a'}
+              bg={!canAct || !canUse('ACTION5') ? '#202632' : '#cf5d6a'}
               color="white"
               fontWeight={800}
               fontSize="sm"
               boxShadow={
                 !canAct || !canUse('ACTION5')
                   ? 'inset 0 2px 4px rgba(255, 255, 255, 0.04)'
-                  : 'inset 0 2px 8px rgba(255,255,255,.18), 0 6px 0 #7d1f2a'
+                  : 'inset 0 2px 8px rgba(255,255,255,.18), 0 6px 0 #7a2733'
               }
               cursor={!canAct || !canUse('ACTION5') ? 'not-allowed' : 'pointer'}
               opacity={!canAct || !canUse('ACTION5') ? 0.55 : 1}
@@ -5372,12 +5799,12 @@ function ArcGamepad({canAct, actionSpace, onAction}) {
               h={12}
               minW={12}
               borderRadius="full"
-              bg={!canAct || !canUse('ACTION7') ? 'whiteAlpha.100' : '#2f8f8f'}
+              bg={!canAct || !canUse('ACTION7') ? '#202632' : '#45a6a0'}
               color="white"
               boxShadow={
                 !canAct || !canUse('ACTION7')
                   ? 'inset 0 2px 4px rgba(255, 255, 255, 0.04)'
-                  : 'inset 0 2px 8px rgba(255,255,255,.18), 0 5px 0 #155858'
+                  : 'inset 0 2px 8px rgba(255,255,255,.18), 0 5px 0 #1b6461'
               }
               isDisabled={!canAct || !canUse('ACTION7')}
               onClick={() => onAction('ACTION7')}
@@ -5385,9 +5812,9 @@ function ArcGamepad({canAct, actionSpace, onAction}) {
           </Tooltip>
         </HStack>
         <HStack mt={4} spacing={2} justify="center">
-          <Box w={12} h="3px" borderRadius="full" bg="whiteAlpha.300" />
-          <Box w={12} h="3px" borderRadius="full" bg="whiteAlpha.300" />
-          <Box w={12} h="3px" borderRadius="full" bg="whiteAlpha.300" />
+          <Box w={12} h="3px" borderRadius="full" bg="rgba(255,255,255,.22)" />
+          <Box w={12} h="3px" borderRadius="full" bg="rgba(255,255,255,.22)" />
+          <Box w={12} h="3px" borderRadius="full" bg="rgba(255,255,255,.22)" />
         </HStack>
       </Box>
     </Stack>
@@ -5406,8 +5833,8 @@ function frameDimensions(frame) {
 }
 
 function frameValueColor(value) {
-  const index = Math.abs(Number(value) || 0) % ARC_COLOR_PALETTE.length
-  return ARC_COLOR_PALETTE[index]
+  const index = Math.abs(Number(value) || 0) % ARC_DISPLAY_COLOR_PALETTE.length
+  return ARC_DISPLAY_COLOR_PALETTE[index]
 }
 
 function ArcAgiFrameCanvas({
@@ -5416,12 +5843,23 @@ function ArcAgiFrameCanvas({
   actionSpace,
   onAction,
   maxBoardWidth = '100%',
+  annotationMode = false,
+  annotationMarkers = [],
+  onAnnotateCell,
 }) {
   const canvasRef = React.useRef(null)
   const [hoverCell, setHoverCell] = React.useState(null)
   const {width, height} = React.useMemo(() => frameDimensions(frame), [frame])
+  const safeAnnotationMarkers = React.useMemo(
+    () => (Array.isArray(annotationMarkers) ? annotationMarkers : []),
+    [annotationMarkers]
+  )
+  const canAnnotate = Boolean(
+    annotationMode && typeof onAnnotateCell === 'function'
+  )
   const canClick =
     canAct && (!actionSpace.length || actionSpace.includes('ACTION6'))
+  const isInteractive = canClick || canAnnotate
 
   const pointToCell = React.useCallback(
     (event) => {
@@ -5460,7 +5898,7 @@ function ArcAgiFrameCanvas({
 
     ctx.imageSmoothingEnabled = false
     ctx.clearRect(0, 0, pixelWidth, pixelHeight)
-    ctx.fillStyle = '#111827'
+    ctx.fillStyle = '#0b1018'
     ctx.fillRect(0, 0, pixelWidth, pixelHeight)
 
     const cellWidth = pixelWidth / width
@@ -5480,9 +5918,9 @@ function ArcAgiFrameCanvas({
     })
 
     const minCellSize = Math.min(cellWidth, cellHeight)
-    if (minCellSize >= 10) {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.26)'
-      ctx.lineWidth = Math.max(1, Math.floor(dpr))
+    if (minCellSize >= 7) {
+      ctx.strokeStyle = 'rgba(12, 17, 26, 0.18)'
+      ctx.lineWidth = Math.max(0.5, 0.55 * dpr)
       ctx.beginPath()
       for (let x = 1; x < width; x += 1) {
         const px = Math.round(x * cellWidth)
@@ -5497,8 +5935,38 @@ function ArcAgiFrameCanvas({
       ctx.stroke()
     }
 
-    if (canClick && hoverCell) {
-      ctx.strokeStyle = '#ffffff'
+    safeAnnotationMarkers.forEach((marker, index) => {
+      const x = Number(marker && marker.x)
+      const y = Number(marker && marker.y)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return
+      if (x < 0 || x >= width || y < 0 || y >= height) return
+
+      const centerX = (Math.trunc(x) + 0.5) * cellWidth
+      const centerY = (Math.trunc(y) + 0.5) * cellHeight
+      const label = String(marker.label || marker.id || index + 1).slice(0, 4)
+      const radius = Math.max(8 * dpr, Math.min(cellWidth, cellHeight) * 1.18)
+
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(37, 99, 235, 0.94)'
+      ctx.fill()
+      ctx.lineWidth = Math.max(2 * dpr, radius * 0.16)
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)'
+      ctx.stroke()
+      ctx.fillStyle = '#ffffff'
+      ctx.font = `${Math.max(
+        10 * dpr,
+        radius * 0.78
+      )}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(label, centerX, centerY + 0.5 * dpr)
+      ctx.restore()
+    })
+
+    if (isInteractive && hoverCell) {
+      ctx.strokeStyle = '#9bdcff'
       ctx.lineWidth = Math.max(2, Math.round(2 * dpr))
       ctx.strokeRect(
         Math.floor(hoverCell.x * cellWidth) + ctx.lineWidth / 2,
@@ -5507,7 +5975,7 @@ function ArcAgiFrameCanvas({
         Math.max(1, Math.floor(cellHeight) - ctx.lineWidth)
       )
     }
-  }, [canClick, frame, height, hoverCell, width])
+  }, [frame, height, hoverCell, isInteractive, safeAnnotationMarkers, width])
 
   React.useEffect(() => {
     draw()
@@ -5544,10 +6012,10 @@ function ArcAgiFrameCanvas({
       w="full"
       maxW={maxBoardWidth}
       borderWidth="1px"
-      borderColor="blackAlpha.700"
+      borderColor="rgba(255,255,255,.08)"
       borderRadius="8px"
-      bg="#05070b"
-      boxShadow="inset 0 0 0 1px rgba(255,255,255,.08), 0 18px 42px rgba(0,0,0,.25)"
+      bg="#070b11"
+      boxShadow="inset 0 0 0 1px rgba(255,255,255,.05), 0 18px 42px rgba(0,0,0,.30)"
       overflow="hidden"
     >
       <Box
@@ -5559,7 +6027,7 @@ function ArcAgiFrameCanvas({
         style={{
           aspectRatio: `${width || 1} / ${height || 1}`,
           imageRendering: 'pixelated',
-          cursor: canClick ? 'crosshair' : 'default',
+          cursor: isInteractive ? 'crosshair' : 'default',
           touchAction: 'none',
         }}
         onMouseMove={(event) => {
@@ -5568,10 +6036,14 @@ function ArcAgiFrameCanvas({
         onMouseLeave={() => setHoverCell(null)}
         onClick={(event) => {
           const cell = pointToCell(event)
+          if (canAnnotate && cell) {
+            onAnnotateCell(cell)
+            return
+          }
           if (canClick && cell) onAction('ACTION6', cell)
         }}
       />
-      {hoverCell && canClick ? (
+      {hoverCell && isInteractive ? (
         <Badge
           position="absolute"
           right={3}
@@ -5600,6 +6072,7 @@ function ArcAgiFrameBoard({
   onReset,
 }) {
   const consoleRef = React.useRef(null)
+  const heldKeyRepeatRef = React.useRef({})
   const [isFullscreen, setIsFullscreen] = React.useState(false)
   const frame = React.useMemo(
     () => (Array.isArray(state && state.frame) ? state.frame : []),
@@ -5702,13 +6175,25 @@ function ArcAgiFrameBoard({
         return
       }
 
+      if (!shouldAcceptHeldKeyRepeat(event, heldKeyRepeatRef)) {
+        return
+      }
+
+      if (event.repeat === true && previewPending) {
+        return
+      }
+
       if (resetRequested) {
         onReset()
       } else {
-        onAction(action)
+        onAction(action, {
+          inputSource: 'keyboard',
+          heldKeyRepeat: event.repeat === true,
+          keyId: event.code || event.key || action,
+        })
       }
     },
-    [actionSpace, canQueueAction, canReset, onAction, onReset]
+    [actionSpace, canQueueAction, canReset, onAction, onReset, previewPending]
   )
 
   React.useEffect(() => {
@@ -5748,9 +6233,11 @@ function ArcAgiFrameBoard({
       mx="auto"
       p={[3, 4, 5]}
       borderRadius="8px"
-      bg="#30333d"
+      bg="linear-gradient(145deg, #252b36 0%, #1a202b 52%, #121821 100%)"
       color="white"
-      boxShadow="inset 0 1px 0 rgba(255,255,255,.16), inset 0 -10px 30px rgba(0,0,0,.22), 0 22px 54px rgba(15,23,42,.22)"
+      borderWidth="1px"
+      borderColor="rgba(255,255,255,.10)"
+      boxShadow="inset 0 1px 0 rgba(255,255,255,.14), inset 0 -16px 34px rgba(0,0,0,.22), 0 22px 54px rgba(15,23,42,.28)"
       sx={{
         '&:fullscreen': {
           width: '100vw',
@@ -5779,14 +6266,19 @@ function ArcAgiFrameBoard({
                 h={3}
                 borderRadius="full"
                 bg={playing ? '#39d98a' : '#ffcf5a'}
+                boxShadow={
+                  playing
+                    ? '0 0 0 4px rgba(57,217,138,.12)'
+                    : '0 0 0 4px rgba(255,207,90,.12)'
+                }
               />
-              <Text color="white" fontWeight={800}>
+              <Text color="#f6f8fb" fontWeight={800}>
                 {game.title || state.gameId}
               </Text>
             </HStack>
             <HStack
               mt={1}
-              color="whiteAlpha.700"
+              color="#aeb8c7"
               fontSize="sm"
               spacing={2}
               flexWrap="wrap"
@@ -5820,6 +6312,11 @@ function ArcAgiFrameBoard({
                 h={9}
                 minW={9}
                 borderRadius="8px"
+                bg="rgba(255,255,255,.08)"
+                color="#edf2fb"
+                borderWidth="1px"
+                borderColor="rgba(255,255,255,.12)"
+                _hover={{bg: 'rgba(255,255,255,.14)'}}
                 onClick={handleToggleFullscreen}
               />
             </Tooltip>
@@ -5839,10 +6336,10 @@ function ArcAgiFrameBoard({
             minW={0}
             p={[2, 3, 4]}
             borderRadius="8px"
-            bg="#141821"
+            bg="linear-gradient(180deg, #111722, #0b1018)"
             borderWidth="1px"
-            borderColor="blackAlpha.700"
-            boxShadow="inset 0 2px 16px rgba(0,0,0,.45)"
+            borderColor="rgba(255,255,255,.08)"
+            boxShadow="inset 0 2px 18px rgba(0,0,0,.58)"
             _focus={{
               outline: '2px solid',
               outlineColor: '#7fd5ff',
@@ -5872,31 +6369,31 @@ function ArcAgiFrameBoard({
             <Box
               p={3}
               borderRadius="8px"
-              bg="rgba(255,255,255,.08)"
-              color="whiteAlpha.800"
+              bg="rgba(10,14,22,.56)"
+              color="#aeb8c7"
               fontSize="xs"
               borderWidth="1px"
-              borderColor="whiteAlpha.200"
+              borderColor="rgba(255,255,255,.10)"
             >
               <HStack spacing={2} flexWrap="wrap">
                 <Kbd
-                  bg="whiteAlpha.200"
-                  color="whiteAlpha.800"
-                  borderColor="whiteAlpha.300"
+                  bg="rgba(255,255,255,.09)"
+                  color="#d8e0ee"
+                  borderColor="rgba(255,255,255,.14)"
                 >
                   WASD
                 </Kbd>
                 <Kbd
-                  bg="whiteAlpha.200"
-                  color="whiteAlpha.800"
-                  borderColor="whiteAlpha.300"
+                  bg="rgba(255,255,255,.09)"
+                  color="#d8e0ee"
+                  borderColor="rgba(255,255,255,.14)"
                 >
                   Space
                 </Kbd>
                 <Kbd
-                  bg="whiteAlpha.200"
-                  color="whiteAlpha.800"
-                  borderColor="whiteAlpha.300"
+                  bg="rgba(255,255,255,.09)"
+                  color="#d8e0ee"
+                  borderColor="rgba(255,255,255,.14)"
                 >
                   Ctrl+Z
                 </Kbd>
@@ -5931,6 +6428,7 @@ function ArcGameBoard({
   onReset,
   onSelectCell,
 }) {
+  const heldKeyRepeatRef = React.useRef({})
   const isArcAgiFrame = Boolean(
     game && game.renderHints && game.renderHints.renderer === 'arc-agi-frame-v0'
   )
@@ -5976,7 +6474,16 @@ function ArcGameBoard({
 
       event.preventDefault()
       event.stopPropagation()
-      onAction(action)
+
+      if (!shouldAcceptHeldKeyRepeat(event, heldKeyRepeatRef)) {
+        return
+      }
+
+      onAction(action, {
+        inputSource: 'keyboard',
+        heldKeyRepeat: event.repeat === true,
+        keyId: event.code || event.key || action,
+      })
     },
     [canAct, onAction]
   )
@@ -6282,6 +6789,7 @@ export default function IdenaArcPage() {
   const [recognitionActionIndex, setRecognitionActionIndex] = React.useState('')
   const [recognitionNotes, setRecognitionNotes] = React.useState('')
   const [evidenceEvents, setEvidenceEvents] = React.useState('')
+  const [visualAnnotations, setVisualAnnotations] = React.useState([])
   const [strategyChange, setStrategyChange] = React.useState('')
   const [teachingNotes, setTeachingNotes] = React.useState('')
   const [localAiGameplayExplanation, setLocalAiGameplayExplanation] =
@@ -6338,6 +6846,7 @@ export default function IdenaArcPage() {
   const arcQueuedActionsRef = React.useRef([])
   const drainArcQueuedActionRef = React.useRef(null)
   const lastArcInputRef = React.useRef({action: '', at: 0})
+  const lastHeldKeyActionRef = React.useRef({})
   const scrollToGamePanel = React.useCallback(() => {
     if (typeof window === 'undefined') {
       return
@@ -6423,6 +6932,7 @@ export default function IdenaArcPage() {
         teacherRounds,
         compressedTeacherMemory,
         providerAnnotationDrafts,
+        visualAnnotations,
         phase: attemptPhase,
       }),
     [
@@ -6434,6 +6944,7 @@ export default function IdenaArcPage() {
       providerAnnotationDrafts,
       selectedArcAgiGame,
       teacherRounds,
+      visualAnnotations,
     ]
   )
   const handleResetArcAiCost = React.useCallback(() => {
@@ -6648,6 +7159,12 @@ export default function IdenaArcPage() {
       humanReplayActions,
       localAiAttemptActionItems
     )
+    const typedEvidenceEvents = evidenceEventsFromText(evidenceEvents)
+    const visualEvidenceEvents =
+      visualAnnotationEvidenceEvents(visualAnnotations)
+    const humanReplayKeyMomentEvents = evidenceEventsFromText(
+      humanReplayKeyMoments
+    ).concat(visualEvidenceEvents)
 
     return {
       status: annotationStatus,
@@ -6656,7 +7173,7 @@ export default function IdenaArcPage() {
       humanRuleAnnotation: {
         ruleHypotheses,
         confirmedRules,
-        evidenceEvents,
+        evidenceEvents: typedEvidenceEvents.concat(visualEvidenceEvents),
         recognitionMoment: {
           actionIndex: recognitionActionIndex,
           description: recognitionNotes,
@@ -6699,8 +7216,9 @@ export default function IdenaArcPage() {
           invariants: humanReplayInvariants,
           actionPolicy: humanReplayActionPolicy,
           rejectedAlternatives: humanReplayRejectedAlternatives,
+          evidenceEvents: visualEvidenceEvents,
         },
-        keyMoments: humanReplayKeyMoments,
+        keyMoments: humanReplayKeyMomentEvents,
         corrections: humanReplayCorrections,
       },
       comparisonAnnotation: {
@@ -6750,6 +7268,7 @@ export default function IdenaArcPage() {
     teacherJourney,
     compressedTeacherMemory,
     providerAnnotationDrafts,
+    visualAnnotations,
     wrongHypotheses,
   ])
 
@@ -7021,6 +7540,7 @@ export default function IdenaArcPage() {
     arcActionInFlightRef.current = false
     arcQueuedActionsRef.current = []
     lastArcInputRef.current = {action: '', at: 0}
+    lastHeldKeyActionRef.current = {}
     setSelectedCell(null)
     setActions('')
     setBundle(null)
@@ -7030,6 +7550,7 @@ export default function IdenaArcPage() {
     setLocalAiReplay(null)
     setLocalAiReplayIndex(0)
     setLocalAiReplayPlaying(false)
+    setVisualAnnotations([])
     setAttemptPhase(nextGame ? 'human_play' : 'setup')
     setHumanAttempt(null)
     setLocalAiAttempts([])
@@ -7062,6 +7583,23 @@ export default function IdenaArcPage() {
 
       const isArcAgiFrame =
         game.renderHints && game.renderHints.renderer === 'arc-agi-frame-v0'
+      const keyboardInput = actionData.inputSource === 'keyboard'
+      const heldKeyRepeat = actionData.heldKeyRepeat === true
+      const keyId = String(actionData.keyId || action || 'keyboard')
+
+      if (keyboardInput) {
+        const now = Date.now()
+        const previousAt = Number(lastHeldKeyActionRef.current[keyId] || 0)
+
+        if (
+          now - previousAt < ARC_HELD_KEY_REPEAT_MS ||
+          (heldKeyRepeat && isArcAgiFrame && arcActionInFlightRef.current)
+        ) {
+          return
+        }
+
+        lastHeldKeyActionRef.current[keyId] = now
+      }
 
       if (isArcAgiFrame) {
         const now = Date.now()
@@ -7618,6 +8156,7 @@ export default function IdenaArcPage() {
     setLocalAiReplay(null)
     setLocalAiReplayIndex(0)
     setLocalAiReplayPlaying(false)
+    setVisualAnnotations([])
     setLocalAiAttemptActions('')
     setLocalAiGameplayExplanation('')
     setLocalAiGameplaySummary('')
@@ -7644,6 +8183,7 @@ export default function IdenaArcPage() {
     arcActionInFlightRef.current = false
     arcQueuedActionsRef.current = []
     lastArcInputRef.current = {action: '', at: 0}
+    lastHeldKeyActionRef.current = {}
     setActions('')
     setAttemptPhase('human_saved')
     setTeacherStep('ai')
@@ -7712,24 +8252,31 @@ export default function IdenaArcPage() {
           onProgress: ({
             actions: nextActions,
             preview: progressPreview,
-            timeline,
+            timeline = [],
             observationSummary,
+            stopReason,
+            stepIndex,
           }) => {
+            const progressTimeline = Array.isArray(timeline) ? timeline : []
             setLocalAiAttemptActions(buildActionsText(nextActions))
             setLocalAiReplay(
-              progressPreview
+              progressPreview || progressTimeline.length
                 ? {
                     preview: progressPreview,
                     prefixCount: 0,
                     replayActions: nextActions,
-                    timeline,
+                    timeline: progressTimeline,
                     observationSummary,
+                    status: stopReason || 'running',
+                    stepIndex,
                     createdAt: new Date().toISOString(),
                   }
                 : null
             )
             setLocalAiReplayIndex(0)
-            setLocalAiReplayPlaying(timeline.length > 1)
+            setLocalAiReplayPlaying(
+              progressTimeline.length > 1 && stopReason !== 'thinking'
+            )
           },
         })
       })
@@ -7799,19 +8346,23 @@ export default function IdenaArcPage() {
         attempt.completed ? '' : 'Causal rule extraction from replay deltas.'
       )
       setLocalAiReplay(
-        preview
+        preview || (Array.isArray(result.timeline) && result.timeline.length)
           ? {
               preview,
               prefixCount: 0,
               replayActions: attempt.actions,
-              timeline: result.timeline,
+              timeline: Array.isArray(result.timeline) ? result.timeline : [],
               observationSummary: result.observationSummary,
+              status: attempt.stopReason,
+              stepIndex: Math.max(0, attempt.actionCount - 1),
               createdAt: new Date().toISOString(),
             }
           : null
       )
       setLocalAiReplayIndex(0)
-      setLocalAiReplayPlaying(result.timeline.length > 1)
+      setLocalAiReplayPlaying(
+        Array.isArray(result.timeline) && result.timeline.length > 1
+      )
       setArcAiCostEvents((current) => current.concat(costEvent).slice(-100))
       setAttemptPhase('ai_attempted')
       setTeacherStep('compare')
@@ -8830,6 +9381,8 @@ export default function IdenaArcPage() {
             setLocalAiGameplayExplanation={setLocalAiGameplayExplanation}
             humanReplayExplanation={humanReplayExplanation}
             setHumanReplayExplanation={setHumanReplayExplanation}
+            visualAnnotations={visualAnnotations}
+            setVisualAnnotations={setVisualAnnotations}
             confirmedRules={confirmedRules}
             setConfirmedRules={setConfirmedRules}
             humanVsAiGap={humanVsAiGap}

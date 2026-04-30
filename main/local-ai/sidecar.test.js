@@ -624,6 +624,38 @@ describe('local-ai sidecar', () => {
     )
   })
 
+  it('strips complete leading Ollama reasoning blocks from assistant content', async () => {
+    const httpClient = {
+      post: jest.fn(async () => ({
+        data: {
+          model: 'idenaarc-qwen36-27b-claude-opus:q4km',
+          message: {
+            role: 'assistant',
+            content:
+              '\n\n<think>\nProbe the board before choosing an action.\n</think>\n{"action":"ACTION1"}',
+          },
+        },
+        config: {
+          url: 'http://127.0.0.1:11434/api/chat',
+        },
+      })),
+    }
+    const sidecar = createLocalAiSidecar({httpClient})
+
+    await expect(
+      sidecar.chat({
+        runtimeType: 'ollama',
+        baseUrl: 'http://127.0.0.1:11434',
+        model: 'idenaarc-qwen36-27b-claude-opus:q4km',
+        input: 'Return one JSON action.',
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      text: '{"action":"ACTION1"}',
+      content: '{"action":"ACTION1"}',
+    })
+  })
+
   it('posts chat to a local runtime service and preserves multimodal content', async () => {
     const httpClient = {
       post: jest.fn(async () => ({

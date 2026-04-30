@@ -356,6 +356,8 @@ function NodeSettings() {
   const isStartingDevnet =
     devnetStatus.stage &&
     !['idle', 'running', 'failed'].includes(devnetStatus.stage)
+  const hasRehearsalNetworkControl =
+    devnetStatus.active || isStartingDevnet || devnetStatus.stage === 'failed'
   const primaryRpcPort = devnetStatus.primaryRpcUrl
     ? Number(String(devnetStatus.primaryRpcUrl).split(':').pop())
     : null
@@ -709,7 +711,7 @@ function NodeSettings() {
               <Box>
                 <Switch
                   isChecked={delayRehearsalSessionOneDay}
-                  isDisabled={isStartingDevnet}
+                  isDisabled={!canUseIpcRenderer}
                   onChange={(event) =>
                     setDelayRehearsalSessionOneDay(event.target.checked)
                   }
@@ -724,6 +726,13 @@ function NodeSettings() {
                     'Use this for ARC-AGI integration tests when you need the private network online but do not want to enter the validation session immediately. Applies to the next start or restart.'
                   )}
                 </Text>
+                {hasRehearsalNetworkControl && isStartingDevnet && (
+                  <Text color="orange.500" fontSize="sm">
+                    {t(
+                      'The current startup keeps its original timing. Toggle this and restart below to apply the new schedule now.'
+                    )}
+                  </Text>
+                )}
               </Box>
             </Stack>
 
@@ -888,7 +897,7 @@ function NodeSettings() {
               )}
 
               <Stack isInline spacing={2} flexWrap="wrap">
-                {!devnetStatus.active ? (
+                {!hasRehearsalNetworkControl ? (
                   <>
                     <PrimaryButton
                       onClick={() => startRehearsalNetwork({connectApp: true})}
@@ -997,19 +1006,28 @@ function NodeSettings() {
                       onClick={() =>
                         restartRehearsalNetwork({
                           connectApp:
-                            rehearsalNodeConnected || rehearsalNeedsConnection,
+                            isStartingDevnet ||
+                            rehearsalNodeConnected ||
+                            rehearsalNeedsConnection,
                         })
                       }
-                      isDisabled={!canUseIpcRenderer || isStartingDevnet}
+                      isDisabled={!canUseIpcRenderer}
                     >
-                      {t('Restart fresh rehearsal')}
+                      {isStartingDevnet
+                        ? t('Restart with selected timing')
+                        : t('Restart fresh rehearsal')}
                     </SecondaryButton>
 
                     <SecondaryButton
                       onClick={() => getNodeBridge().stopValidationDevnet()}
-                      isDisabled={!canUseIpcRenderer || !devnetStatus.active}
+                      isDisabled={
+                        !canUseIpcRenderer ||
+                        (!devnetStatus.active && !isStartingDevnet)
+                      }
                     >
-                      {t('Stop rehearsal network')}
+                      {isStartingDevnet
+                        ? t('Cancel rehearsal startup')
+                        : t('Stop rehearsal network')}
                     </SecondaryButton>
                   </>
                 )}

@@ -819,6 +819,22 @@ function normalizeAssistantTextCandidate(value) {
   return ''
 }
 
+function stripLeadingReasoningBlock(value) {
+  const text = String(value || '').trim()
+
+  if (!text) {
+    return ''
+  }
+
+  const match = text.match(/^<think>[\s\S]*?<\/think>\s*/iu)
+
+  if (!match) {
+    return text
+  }
+
+  return text.slice(match[0].length).trim()
+}
+
 function normalizeOllamaContent(data) {
   if (!data || typeof data !== 'object') {
     return null
@@ -846,7 +862,7 @@ function normalizeOllamaContent(data) {
         : null
     ),
   ]
-    .map((value) => String(value || '').trim())
+    .map((value) => stripLeadingReasoningBlock(value))
     .filter(Boolean)
 
   if (directContentCandidates.length > 0) {

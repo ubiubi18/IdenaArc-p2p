@@ -1539,6 +1539,7 @@ function createValidationDevnetController({
   const state = {
     run: null,
     logs: [],
+    operationId: 0,
     statusTicker: null,
     statusRefreshInFlight: false,
     statusRefreshPromise: null,
@@ -1553,6 +1554,25 @@ function createValidationDevnetController({
   const emitters = {
     onStatus: null,
     onLog: null,
+  }
+
+  function createCancelledOperationError() {
+    const error = new Error('Validation rehearsal startup was cancelled.')
+    error.code = 'VALIDATION_DEVNET_OPERATION_CANCELLED'
+    return error
+  }
+
+  function assertCurrentOperation(operationId) {
+    if (operationId !== state.operationId) {
+      throw createCancelledOperationError()
+    }
+  }
+
+  function isCancelledOperation(error, operationId) {
+    return (
+      operationId !== state.operationId ||
+      error?.code === 'VALIDATION_DEVNET_OPERATION_CANCELLED'
+    )
   }
 
   function setEmitters({onStatus, onLog} = {}) {
@@ -2729,6 +2749,9 @@ function createValidationDevnetController({
       return buildStatus()
     }
 
+    state.operationId += 1
+    const {operationId} = state
+
     publishStatus({
       stage: VALIDATION_DEVNET_PHASE.PREPARING_BINARY,
       message: 'Preparing patched Idena node binary for the rehearsal network.',
@@ -2738,7 +2761,12 @@ function createValidationDevnetController({
     const ensureBinary = ensureNodeBinary || defaultEnsureNodeBinary
 
     try {
-      await ensureBinary((progressStatus) => publishStatus(progressStatus))
+      await ensureBinary((progressStatus) => {
+        if (operationId === state.operationId) {
+          publishStatus(progressStatus)
+        }
+      })
+      assertCurrentOperation(operationId)
 
       const plan = buildValidationDevnetPlan({
         baseDir,
@@ -2771,10 +2799,13 @@ function createValidationDevnetController({
       })
 
       await assignAvailablePorts(run)
+      assertCurrentOperation(operationId)
       await ensureRunDirectories(run)
+      assertCurrentOperation(operationId)
       await Promise.all(
         run.nodes.map((node) => writeNodeConfig(run.plan, node))
       )
+      assertCurrentOperation(operationId)
 
       const bootstrapNode = run.nodes[0]
       publishStatus({
@@ -2783,8 +2814,10 @@ function createValidationDevnetController({
       })
       spawnNodeProcess(bootstrapNode)
       await waitForNodeRpc(bootstrapNode)
+      assertCurrentOperation(operationId)
 
       const bootstrapAddr = await callNodeRpc(bootstrapNode, 'net_ipfsAddress')
+      assertCurrentOperation(operationId)
       appendLog(`[devnet] bootstrap node is reachable at ${bootstrapAddr}`)
 
       publishStatus({
@@ -2797,6 +2830,7 @@ function createValidationDevnetController({
 
       const validatorBootNodes = [bootstrapAddr]
       for (const [index, node] of run.nodes.slice(1).entries()) {
+        assertCurrentOperation(operationId)
         publishStatus({
           stage: VALIDATION_DEVNET_PHASE.STARTING_VALIDATORS,
           message: `Starting rehearsal validator ${index + 1}/${Math.max(
@@ -2813,10 +2847,12 @@ function createValidationDevnetController({
         spawnNodeProcess(node)
         // eslint-disable-next-line no-await-in-loop
         await waitForNodeRpc(node)
+        assertCurrentOperation(operationId)
         // eslint-disable-next-line no-await-in-loop
         const nodeAddr = await callNodeRpc(node, 'net_ipfsAddress').catch(
           () => null
         )
+        assertCurrentOperation(operationId)
         if (nodeAddr) {
           validatorBootNodes.push(nodeAddr)
         }
@@ -2828,12 +2864,17 @@ function createValidationDevnetController({
       })
 
       await waitForPrimaryPeers(run)
+      assertCurrentOperation(operationId)
       await waitForValidatorOnline(run)
+      assertCurrentOperation(operationId)
       if (payload.seedFlips !== false) {
         const seeded = await seedValidationFlips(run, payload)
+        assertCurrentOperation(operationId)
         run.seed = seeded.seed
       }
+      assertCurrentOperation(operationId)
       await refreshRunRuntimeSerialized()
+      assertCurrentOperation(operationId)
 
       publishStatus({
         stage: VALIDATION_DEVNET_PHASE.RUNNING,
@@ -2846,6 +2887,15 @@ function createValidationDevnetController({
 
       return refreshRunRuntimeSerialized()
     } catch (error) {
+      if (isCancelledOperation(error, operationId)) {
+        appendLog('[devnet] rehearsal startup cancelled')
+        return {
+          ...state.status,
+          active: false,
+          cancelled: true,
+        }
+      }
+
       logger.error('validation devnet failed to start', error.toString())
       appendLog(`[devnet] start failed: ${error.message}`)
       await stop({quiet: true})
@@ -2859,6 +2909,8 @@ function createValidationDevnetController({
   }
 
   async function stop({quiet = false} = {}) {
+    state.operationId += 1
+
     if (!state.run) {
       return publishStatus({
         active: false,

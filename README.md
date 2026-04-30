@@ -4,9 +4,10 @@ Research fork of [IdenaAI](https://github.com/ubiubi18/IdenaAI) for
 rehearsal-first ARC-style game sessions, P2P salt exchange, replay verification,
 and local AI trace annotation.
 
-Not production-ready. Do not use with mainnet validation, production rewards,
-live validation automation, production funds, or identities that cannot be
-reset.
+Experimental research software, published in the spirit of open source
+collaboration. It is not production-ready. Do not use it with mainnet
+validation, production rewards, live validation automation, production funds, or
+identities that cannot be reset.
 
 ## MVP Scope
 

@@ -343,6 +343,44 @@ function normalizeDifficulty(value) {
   return Math.max(1, Math.min(5, parsed))
 }
 
+function normalizeVisualMarker(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const x = normalizeNullableInteger(value.x, {min: 0, max: 4096})
+  const y = normalizeNullableInteger(value.y, {min: 0, max: 4096})
+
+  if (x === null || y === null) {
+    return null
+  }
+
+  const frameWidth = normalizeNullableInteger(
+    value.frameWidth || value.frame_width,
+    {min: 1, max: 4096}
+  )
+  const frameHeight = normalizeNullableInteger(
+    value.frameHeight || value.frame_height,
+    {min: 1, max: 4096}
+  )
+  const fallbackId = `${x}:${y}`
+
+  return {
+    protocol: 'idena-arc-visual-marker-v0',
+    markerId: boundedString(
+      value.markerId || value.marker_id || value.id || fallbackId,
+      40
+    ),
+    label: boundedString(value.label || value.markerLabel || fallbackId, 20),
+    x,
+    y,
+    frameWidth,
+    frameHeight,
+    role: boundedString(value.role || 'evidence', 80),
+    note: boundedString(value.note || value.description || value.event, 600),
+  }
+}
+
 function normalizeEvidenceEvents(value) {
   if (Array.isArray(value)) {
     return value
@@ -360,22 +398,39 @@ function normalizeEvidenceEvents(value) {
           return null
         }
 
+        const visualMarker = normalizeVisualMarker(
+          item.visualMarker ||
+            item.visual_marker ||
+            item.marker ||
+            (item.x !== undefined || item.y !== undefined ? item : null)
+        )
+        const description = boundedString(
+          item.description ||
+            item.event ||
+            (visualMarker
+              ? `Visual marker ${visualMarker.label} at ${visualMarker.x},${visualMarker.y}`
+              : ''),
+          600
+        )
+        const rawActionIndex =
+          item.actionIndex !== undefined ? item.actionIndex : item.action_index
+        const rawTimestamp = item.t_ms !== undefined ? item.t_ms : item.tMs
+
         return {
-          actionIndex: normalizeNullableInteger(
-            item.actionIndex || item.action_index
-          ),
-          t_ms: normalizeNullableInteger(item.t_ms || item.tMs, {
+          actionIndex: normalizeNullableInteger(rawActionIndex),
+          t_ms: normalizeNullableInteger(rawTimestamp, {
             min: 0,
             max: Number.MAX_SAFE_INTEGER,
           }),
-          description: boundedString(item.description || item.event, 600),
+          description,
           observationHash: boundedString(
             item.observationHash || item.observation_hash,
             96
           ),
+          ...(visualMarker ? {visualMarker} : {}),
         }
       })
-      .filter((item) => item && item.description)
+      .filter((item) => item && (item.description || item.visualMarker))
   }
 
   return normalizeStringList(value, {maxItems: 64, maxLength: 600}).map(
@@ -984,6 +1039,9 @@ function normalizeTeacherJourney(input = {}, context = {}) {
     teacherRounds: normalizeTeacherRounds(input.teacherRounds),
     providerAnnotationDrafts: normalizeProviderAnnotationDrafts(
       input.providerAnnotationDrafts
+    ),
+    visualAnnotations: normalizeEvidenceEvents(
+      input.visualAnnotations || input.visual_annotations
     ),
     compressedTeacherMemory: normalizeCompressedTeacherMemory(
       input.compressedTeacherMemory || {}

@@ -56,6 +56,7 @@ import {
   DEFAULT_LOCAL_AI_SETTINGS,
   DEFAULT_LOCAL_AI_PUBLIC_MODEL_ID,
   DEFAULT_LOCAL_AI_PUBLIC_VISION_ID,
+  RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
   DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY,
   INTERNVL3_5_1B_RESEARCH_RUNTIME_FAMILY,
   INTERNVL3_5_1B_RESEARCH_RUNTIME_MODEL,
@@ -85,7 +86,7 @@ import {
 import {getSharedGlobal} from '../../shared/utils/shared-global'
 
 const DEFAULT_MODELS = {
-  'local-ai': '',
+  'local-ai': RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
   openai: 'gpt-5.4',
   'openai-compatible': 'gpt-4o-mini',
   gemini: 'gemini-2.0-flash',
@@ -1493,7 +1494,8 @@ function describeLocalAiSelection(localAi, runtimeUrl, t) {
     return {
       title: t('Ollama local runtime'),
       description: t(
-        'Best for simple local chat. IdenaAI talks to your own Ollama runtime on this device.'
+        'Best for local-first ARC teacher work. IdenaAI talks to Ollama on this device; recommended model: {{model}}.',
+        {model: RECOMMENDED_LOCAL_AI_OLLAMA_MODEL}
       ),
       endpointLabel: t('Ollama endpoint'),
       endpointHelper: t(
@@ -5842,12 +5844,12 @@ export default function AiSettingsPage() {
                   {t('Fix automatically')}
                 </SecondaryButton>
                 <SecondaryButton onClick={applyRecommendedLocalAiSetup}>
-                  {t('Use Ollama instead')}
+                  {t('Use Qwen/Ollama')}
                 </SecondaryButton>
               </Stack>
               <Text color="muted" fontSize="sm">
                 {t(
-                  'Recommended for most people: let IdenaAI prepare the default Molmo runtime now and follow the progress bar below. The compact Molmo path is the safer fallback. InternVL3.5-1B is the lightest official same-provider alternative, while InternVL3.5-8B stays the heavy experimental option. Pick Ollama only if you already run your own local model runtime.'
+                  'For local-first ARC teacher work, use Qwen/Ollama when that model is installed. The managed Molmo and InternVL paths remain local vision/runtime alternatives, and the compact Molmo path is the safer fallback for one-click setup.'
                 )}
               </Text>
               <Box
