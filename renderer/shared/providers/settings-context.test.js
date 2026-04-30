@@ -27,7 +27,7 @@ describe('settings-context ai solver normalization', () => {
     expect(buildAiSolverSettings()).toMatchObject({
       memoryBudgetGiB: 32,
       systemReserveGiB: 6,
-      localAiMemoryReference: 'molmo2-4b',
+      localAiMemoryReference: 'qwen36-27b-q4km',
     })
   })
 

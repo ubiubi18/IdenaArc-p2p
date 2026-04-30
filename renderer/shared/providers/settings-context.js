@@ -7,11 +7,10 @@ import useLogger from '../hooks/use-logger'
 import {AVAILABLE_LANGS} from '../../i18n'
 import {emitRpcConnectionChanged} from '../utils/rpc-connection-events'
 import {
-  DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY,
+  DEFAULT_LOCAL_AI_MEMORY_REFERENCE,
   DEFAULT_LOCAL_AI_OLLAMA_MODEL,
   buildLocalAiSettings,
   mergeLocalAiSettings,
-  resolveManagedLocalRuntimeMemoryReference,
 } from '../utils/local-ai-settings'
 
 const SETTINGS_INITIALIZE = 'SETTINGS_INITIALIZE'
@@ -42,9 +41,7 @@ const DEFAULT_AI_SOLVER_SETTINGS = {
   shortSessionOpenAiFastModel: 'gpt-5.4-mini',
   memoryBudgetGiB: 32,
   systemReserveGiB: 6,
-  localAiMemoryReference: resolveManagedLocalRuntimeMemoryReference(
-    DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY
-  ),
+  localAiMemoryReference: DEFAULT_LOCAL_AI_MEMORY_REFERENCE,
   mode: 'manual',
   onchainAutoSubmitConsentAt: '',
   autoReportEnabled: false,

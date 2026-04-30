@@ -82,8 +82,9 @@ import {useHardFork} from '../../screens/hardfork/hooks'
 import {ChevronRightIcon, GithubIcon} from './icons'
 import {AiEnableDialog} from './ai-enable-dialog'
 import {
-  DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY,
-  buildManagedLocalRuntimePreset,
+  DEFAULT_LOCAL_AI_MEMORY_REFERENCE,
+  RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
+  buildRecommendedLocalAiMacPreset,
 } from '../utils/local-ai-settings'
 import {
   buildLocalAiRuntimePayload,
@@ -622,14 +623,18 @@ function BenchmarkResearchBanner() {
           if (provider === 'local-ai') {
             updateLocalAiSettings({
               enabled: true,
-              ...buildManagedLocalRuntimePreset(
-                DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY
-              ),
+              ...buildRecommendedLocalAiMacPreset(),
             })
           }
           updateAiSolverSettings({
             enabled: true,
             provider,
+            ...(provider === 'local-ai'
+              ? {
+                  model: RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
+                  localAiMemoryReference: DEFAULT_LOCAL_AI_MEMORY_REFERENCE,
+                }
+              : {}),
           })
           router.push(
             provider === 'local-ai'

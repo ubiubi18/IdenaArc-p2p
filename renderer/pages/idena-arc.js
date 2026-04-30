@@ -36,6 +36,11 @@ import {
 } from '../shared/providers/settings-context'
 import {buildLocalAiRuntimePayload} from '../shared/utils/ai-provider-readiness'
 import {
+  DEFAULT_LOCAL_AI_MEMORY_REFERENCE,
+  RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
+  buildRecommendedLocalAiMacPreset,
+} from '../shared/utils/local-ai-settings'
+import {
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -8705,18 +8710,23 @@ export default function IdenaArcPage() {
 
   const handleUseLocalAiForArc = React.useCallback(() => {
     if (typeof settingsDispatch.updateLocalAiSettings === 'function') {
-      settingsDispatch.updateLocalAiSettings({enabled: true})
+      settingsDispatch.updateLocalAiSettings({
+        enabled: true,
+        ...buildRecommendedLocalAiMacPreset(),
+      })
     }
     if (typeof settingsDispatch.updateAiSolverSettings === 'function') {
       settingsDispatch.updateAiSolverSettings({
         enabled: true,
         provider: 'local-ai',
+        model: RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
+        localAiMemoryReference: DEFAULT_LOCAL_AI_MEMORY_REFERENCE,
       })
     }
     toast({
       title: 'Local AI selected',
       description:
-        'The teacher loop will keep cloud providers as helpers only.',
+        'Qwen/Ollama is selected. Cloud providers stay helpers only.',
       status: 'success',
       duration: 3500,
       isClosable: true,

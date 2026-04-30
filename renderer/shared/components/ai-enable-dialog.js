@@ -22,12 +22,14 @@ import {PrimaryButton, SecondaryButton} from './button'
 import {EyeIcon, EyeOffIcon} from './icons'
 import {isLocalAiProvider} from '../utils/ai-provider-readiness'
 import {
-  DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY,
-  getManagedLocalRuntimeInstallProfile,
+  QWEN36_27B_CLAUDE_OPUS_HF_OLLAMA_MODEL,
+  RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
 } from '../utils/local-ai-settings'
 import {getSharedGlobal} from '../utils/shared-global'
 
 const LOCAL_AI_DEFAULT_RESERVE_GIB = 6
+const QWEN36_27B_Q4KM_MINIMUM_GIB = 24
+const QWEN36_27B_Q4KM_COMFORTABLE_GIB = 36
 
 function ensureBridge() {
   if (!global.aiSolver) {
@@ -58,16 +60,12 @@ export function AiEnableDialog({
     Number.isFinite(totalSystemMemoryBytes) && totalSystemMemoryBytes > 0
       ? Math.max(1, Math.round(totalSystemMemoryBytes / 1024 ** 3))
       : 0
-  const managedInstallProfile = getManagedLocalRuntimeInstallProfile(
-    DEFAULT_MANAGED_LOCAL_RUNTIME_FAMILY
-  )
-  const managedMinimumTotalGiB =
-    managedInstallProfile.minimumGiB + LOCAL_AI_DEFAULT_RESERVE_GIB
-  const managedComfortableTotalGiB =
-    managedInstallProfile.comfortableGiB + LOCAL_AI_DEFAULT_RESERVE_GIB
+  const qwenMinimumTotalGiB =
+    QWEN36_27B_Q4KM_MINIMUM_GIB + LOCAL_AI_DEFAULT_RESERVE_GIB
+  const qwenComfortableTotalGiB =
+    QWEN36_27B_Q4KM_COMFORTABLE_GIB + LOCAL_AI_DEFAULT_RESERVE_GIB
   const localAiMemoryWarning =
-    totalSystemMemoryGiB > 0 &&
-    totalSystemMemoryGiB < managedComfortableTotalGiB
+    totalSystemMemoryGiB > 0 && totalSystemMemoryGiB < qwenComfortableTotalGiB
   const externalProviderSectionRef = React.useRef(null)
   const apiKeyInputRef = React.useRef(null)
   const hasLocalProviderOption = useMemo(
@@ -208,7 +206,7 @@ export function AiEnableDialog({
             <Text color="muted" fontSize="sm">
               {hasLocalProviderOption
                 ? t(
-                    'Recommended for new installs: let IdenaAI prepare the local runtime on this device. You only need an external API key if you explicitly want a cloud provider instead.'
+                    'Recommended for new installs: use the local Qwen/Ollama model on this device. You only need an external API key if you explicitly want a cloud provider instead.'
                   )
                 : t(
                     'Choose one or more AI providers. Cloud providers need a session API key for this desktop session.'
@@ -226,14 +224,11 @@ export function AiEnableDialog({
                 <Stack spacing={3}>
                   <Box>
                     <Text fontWeight={600}>
-                      {t('Recommended: local AI on this device')}
+                      {t('Default: Qwen local AI on this device')}
                     </Text>
                     <Text color="muted" fontSize="sm" mt={1}>
                       {t(
-                        'IdenaAI will prepare {{runtime}} for you. The model stays on this machine. First startup can take several minutes and uses local disk space.',
-                        {
-                          runtime: managedInstallProfile.displayName,
-                        }
+                        'IdenaAI will use the Qwen/Ollama local model for ARC teacher work. The model stays on this machine.'
                       )}
                     </Text>
                   </Box>
@@ -248,19 +243,18 @@ export function AiEnableDialog({
                   >
                     <Stack spacing={1}>
                       <Text fontSize="sm" fontWeight={600}>
-                        {managedInstallProfile.modelId}
+                        {RECOMMENDED_LOCAL_AI_OLLAMA_MODEL}
                       </Text>
                       <Text color="muted" fontSize="xs">
-                        {t('{{download}} download from Hugging Face Hub.', {
-                          download: managedInstallProfile.downloadSizeLabel,
-                        })}
+                        {t('Ollama pull fallback')}: ollama pull{' '}
+                        {QWEN36_27B_CLAUDE_OPUS_HF_OLLAMA_MODEL}
                       </Text>
                       <Text color="muted" fontSize="xs">
                         {t(
                           'RAM guide: at least {{minimum}} GB total, safer around {{comfortable}} GB total with {{reserve}} GB reserved for node/app.',
                           {
-                            minimum: managedMinimumTotalGiB,
-                            comfortable: managedComfortableTotalGiB,
+                            minimum: qwenMinimumTotalGiB,
+                            comfortable: qwenComfortableTotalGiB,
                             reserve: LOCAL_AI_DEFAULT_RESERVE_GIB,
                           }
                         )}
@@ -278,14 +272,14 @@ export function AiEnableDialog({
                   >
                     {totalSystemMemoryGiB > 0
                       ? t(
-                          'This desktop has {{count}} GB RAM installed. The default managed model is safer around {{recommended}} GB and above. Smaller machines can still try it, but startup or live-session failures are more likely.',
+                          'This desktop has {{count}} GB RAM installed. The default Qwen model is safer around {{recommended}} GB and above. Smaller machines can still use compact fallback models in AI settings.',
                           {
                             count: totalSystemMemoryGiB,
-                            recommended: managedComfortableTotalGiB,
+                            recommended: qwenComfortableTotalGiB,
                           }
                         )
                       : t(
-                          'Managed local AI needs significant RAM headroom. Smaller machines can still try it, but startup or live-session failures are more likely.'
+                          'Qwen local AI needs significant RAM headroom. Smaller machines can use compact fallback models in AI settings.'
                         )}
                   </Text>
                   {hasLocalProviderOption ? (
