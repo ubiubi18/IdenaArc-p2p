@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at_utc": "2026-05-02T22:50:09+00:00",
+  "generated_at_utc": "2026-05-02T22:52:06+00:00",
   "project": {
     "name": "idena-arc",
     "product_name": "IdenaArc",
@@ -12,8 +12,8 @@
   },
   "git": {
     "branch": "main",
-    "head": "2f96326a8bb88bfb45fbc135c0918e47b2e84671",
-    "head_short": "2f96326a",
+    "head": "7513149759bcb5dbb1347bb43f328e470bd2f4d5",
+    "head_short": "75131497",
     "remotes": {
       "origin": "https://github.com/ubiubi18/IdenaArc-p2p.git",
       "upstream": null
@@ -126,8 +126,8 @@
         "role": "documentation",
         "area": "docs",
         "notes": "Project and implementation docs",
-        "size_bytes": 6950,
-        "modified_utc": "2026-05-02T22:49:46+00:00"
+        "size_bytes": 8514,
+        "modified_utc": "2026-05-02T22:51:59+00:00"
       },
       {
         "path": "docs/protocol/arc-public-action-base-layer.md",

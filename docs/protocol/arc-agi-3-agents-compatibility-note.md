@@ -12,6 +12,33 @@ IdenaArc should be able to export and import replay artifacts that are easy to
 inspect with ARC-style agent tooling. It should not copy game-specific LLM
 prompts or public-fixture strategies into live hidden-rule sessions.
 
+## Important For IdenaArc
+
+The practical takeaways for IdenaArc are:
+
+- ARC docs and the agent harness define a public compatibility surface, not our
+  product architecture.
+- Public ARC fixtures are rehearsal and regression material. Hidden-seed and
+  held-out-generator performance remain the signal for adapter distribution.
+- The durable action identity in IdenaArc is `arc_action` plus replay state
+  hashes. `action_input.id` is normalized for current ARC playback tooling, but
+  it is not enough as a protocol identifier.
+- `available_actions` is a permission list, not a solution hint. In particular,
+  `ACTION6` being available does not reveal active click coordinates.
+- Terminal-state behavior matters for training quality: after `GAME_OVER`, only
+  `RESET` is valid, so non-reset actions after terminal states should not become
+  examples of failed reasoning.
+- Local/offline ARC execution is the right default for high-volume development,
+  replay, annotation, and local AI training. Online/competition mode is an
+  opt-in reporting path for hosted scorecards and shareable ARC replays.
+- Hosted ARC scorecards are useful evaluation reports, but IdenaArc's canonical
+  truth remains the signed trace bundle, local replay proof, recording hash, and
+  result proof.
+- ARC API credentials, base URLs, and scorecard mode are transient run inputs.
+  They must not be persisted in shared trace bundles.
+- Any change in ARC docs around `FrameData`, actions, recordings, or competition
+  mode should trigger schema and compatibility-test review in IdenaArc.
+
 ## Source Context
 
 - ARC Prize agent harness:
