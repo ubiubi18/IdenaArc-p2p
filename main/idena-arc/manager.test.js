@@ -4,6 +4,7 @@ const fs = require('fs-extra')
 const {createIdenaArcManager} = require('./manager')
 const {
   privateKeyToAddress,
+  signPayloadWithPrivateKey,
   signIdenaMessageWithPrivateKey,
 } = require('./crypto')
 
@@ -349,18 +350,48 @@ describe('idena-arc manager', () => {
               {
                 action: 'move_right',
                 reason: 'Follow the visible target.',
+                intendedTest: 'Test whether moving right changes distance.',
+                expectedObservation: 'The player should move closer.',
                 observation: 'Score improved.',
+                observedEffect: 'Score improved after moving right.',
+                localEffect: 'The right action changed score and position.',
+                worldModelHypothesis:
+                  'Visible target distance guides useful movement.',
+                hypothesisStatus: 'new',
+                analogyRisk: 'low',
+                nextDiscriminatingTest:
+                  'Try moving down and confirm the target-distance rule.',
                 confidence: 0.7,
               },
               {
                 action: 'move_down',
                 reason: 'Continue target-directed movement.',
+                intendedTest: 'Confirm the target-distance rule.',
+                expectedObservation: 'The player should move toward target.',
                 observation: 'State changed.',
+                observedEffect: 'State changed after moving down.',
+                localEffect: 'The second movement preserved progress.',
+                worldModelHypothesis:
+                  'Target-directed movement is the transfer rule.',
+                hypothesisStatus: 'kept',
+                analogyRisk: 'low',
+                nextDiscriminatingTest:
+                  'Try the same target-directed policy on the next level.',
                 confidence: 0.6,
               },
             ],
             completed: false,
             stopReason: 'action_cap',
+          },
+        ],
+        hypothesisTimeline: [
+          {
+            actionIndex: 0,
+            action: 'move_left',
+            stateHash: `sha256:${'9'.repeat(64)}`,
+            worldModelHypothesis:
+              'Renderer-supplied stale hypothesis should not be trusted.',
+            hypothesisStatus: 'new',
           },
         ],
         teacherRounds: [
@@ -389,6 +420,36 @@ describe('idena-arc manager', () => {
             },
           },
         ],
+        recognitionMoment: {
+          actionIndex: 0,
+          description: 'The first move made target-distance progress visible.',
+        },
+        failureModeAnnotations: [
+          {
+            id: 'local-effect-no-world-model',
+            label: 'Effect, no rule',
+            failureMode: 'local-effect-no-world-model',
+            failedAbstraction: 'The AI needed to connect local effect to rule.',
+            humanCorrection:
+              'Tie the observed movement to a target-distance rule.',
+            capabilityTag: 'world-model-from-local-effect',
+          },
+        ],
+        levelTransferChecks: [
+          {
+            whyItWorked: 'The move reduced target distance.',
+            shouldTransfer: 'Continue testing target-distance changes.',
+            disconfirmingEvidence:
+              'If distance decreases but score regresses, reject it.',
+          },
+        ],
+        compressionAudit: {
+          status: 'evidence_linked',
+          hasCompressedMemory: true,
+          hasRecognitionMoment: true,
+          failureModeCount: 1,
+          completionComprehensionReady: true,
+        },
         providerAnnotationDrafts: [
           {
             provider: 'openai',
@@ -507,13 +568,59 @@ describe('idena-arc manager', () => {
       humanAttempt: {
         actor: 'human',
         actionCount: 2,
+        replayVerified: true,
+        replayActionCountMatches: true,
+        traceActionHashMatches: true,
       },
       localAiAttempts: [
         expect.objectContaining({
           actor: 'local-ai',
+          replayVerified: true,
+          replayActionCountMatches: true,
           stopReason: 'action_cap',
+          finalStateHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              expectedObservation: 'The player should move closer.',
+              stateHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+              observedEffect: expect.stringContaining('state'),
+              worldModelHypothesis:
+                'Visible target distance guides useful movement.',
+              nextDiscriminatingTest:
+                'Try moving down and confirm the target-distance rule.',
+            }),
+          ]),
         }),
       ],
+      hypothesisTimeline: expect.arrayContaining([
+        expect.objectContaining({
+          expectedObservation: 'The player should move closer.',
+          hypothesisStatus: 'new',
+          stateHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        }),
+      ]),
+      replayVerification: expect.objectContaining({
+        replayVerified: true,
+        stateHashesMatch: true,
+        humanAttemptMatchesTrace: true,
+      }),
+      recognitionMoment: expect.objectContaining({
+        actionIndex: 0,
+      }),
+      failureModeAnnotations: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'local-effect-no-world-model',
+        }),
+      ]),
+      levelTransferChecks: expect.arrayContaining([
+        expect.objectContaining({
+          whyItWorked: 'The move reduced target distance.',
+        }),
+      ]),
+      compressionAudit: expect.objectContaining({
+        status: 'evidence_linked',
+        completionComprehensionReady: true,
+      }),
       visualAnnotations: expect.arrayContaining([
         expect.objectContaining({
           visualMarker: expect.objectContaining({
@@ -523,6 +630,9 @@ describe('idena-arc manager', () => {
         }),
       ]),
     })
+    expect(
+      JSON.stringify(final.annotation.teacherJourney.hypothesisTimeline)
+    ).not.toContain('Renderer-supplied stale hypothesis')
     expect(final.annotation.providerAnnotationDrafts[0]).toMatchObject({
       provider: 'openai',
       reviewedByHuman: false,
@@ -530,6 +640,12 @@ describe('idena-arc manager', () => {
     })
     expect(final.trainingExample).toMatchObject({
       protocol: 'idena-arc-training-example-v0',
+      taskType: 'arc_teacher_multi_task',
+      taskTypes: expect.arrayContaining([
+        'action_effect_prediction',
+        'world_model_compression',
+        'misconception_detection',
+      ]),
       access: 'local-only-private-by-default',
       traceHash: submitted.bundle.result.traceHash,
       recordingHash: submitted.bundle.recordingHash,
@@ -583,6 +699,7 @@ describe('idena-arc manager', () => {
         },
         annotationValidation: {
           status: 'usable-for-training',
+          qualityTier: 'high-quality',
         },
         compressedTeacherMemory: {
           compressedText:
@@ -596,7 +713,42 @@ describe('idena-arc manager', () => {
         providerAnnotationDrafts: [],
         providerDraftPolicy:
           'Provider drafts are excluded unless reviewedByHuman=true.',
+        negativeExamples: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'local-effect-no-world-model',
+            correction: 'Tie the observed movement to a target-distance rule.',
+          }),
+        ]),
+        preferencePairs: expect.arrayContaining([
+          expect.objectContaining({
+            taskType: 'misconception_detection',
+            chosen: 'Tie the observed movement to a target-distance rule.',
+          }),
+          expect.objectContaining({
+            taskType: 'world_model_compression',
+          }),
+        ]),
       },
+      trainingTasks: expect.arrayContaining([
+        expect.objectContaining({
+          taskType: 'action_effect_prediction',
+        }),
+        expect.objectContaining({
+          taskType: 'hypothesis_update',
+        }),
+        expect.objectContaining({
+          taskType: 'world_model_compression',
+        }),
+        expect.objectContaining({
+          taskType: 'discriminating_probe_policy',
+        }),
+        expect.objectContaining({
+          taskType: 'misconception_detection',
+        }),
+        expect.objectContaining({
+          taskType: 'transfer_check',
+        }),
+      ]),
     })
     expect(
       final.annotation.localAiGameplayAnnotation.compression.sourceTextHash
@@ -619,6 +771,16 @@ describe('idena-arc manager', () => {
     })
     expect(dataset.datasetHash).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(dataset.examples[0].capabilityTags).toContain('spatial-planning')
+    expect(dataset.taskTypeCounts).toMatchObject({
+      action_effect_prediction: 1,
+      hypothesis_update: 1,
+      world_model_compression: 1,
+      discriminating_probe_policy: 1,
+      misconception_detection: 1,
+      transfer_check: 1,
+    })
+    expect(dataset.negativeExampleCount).toBeGreaterThanOrEqual(1)
+    expect(dataset.preferencePairCount).toBeGreaterThanOrEqual(2)
     expect(dataset.examples[0].privateText).toBeUndefined()
     expect(importedAnnotation).toMatchObject({
       accepted: true,
@@ -637,6 +799,126 @@ describe('idena-arc manager', () => {
         namespace: 'idena-arc/training-datasets',
       },
     })
+
+    const luckyWinWithoutComprehension = await manager.saveAnnotationBundle({
+      ...draft.annotation,
+      status: 'final',
+      traceBundle: submitted.bundle,
+      teacherJourney: {
+        ...draft.annotation.teacherJourney,
+        humanAttempt: {
+          ...draft.annotation.teacherJourney.humanAttempt,
+          completed: true,
+        },
+        levelTransferChecks: [],
+      },
+    })
+
+    expect(luckyWinWithoutComprehension.acceptedForTraining).toBe(true)
+    expect(
+      luckyWinWithoutComprehension.annotation.annotationValidation.checks
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'completion-comprehension-check',
+          passed: true,
+        }),
+      ])
+    )
+
+    const completedResultPayload = {
+      ...submitted.bundle.result,
+      result: 'completed',
+    }
+    delete completedResultPayload.signature
+    delete completedResultPayload.identityProof
+    const completedSignature = signPayloadWithPrivateKey(
+      privateKey,
+      completedResultPayload
+    )
+    const completedTraceBundle = {
+      ...submitted.bundle,
+      result: {
+        ...completedResultPayload,
+        playerAddress: completedSignature.address,
+        signature: completedSignature,
+        identityProof: {
+          type: 'idena-arc-signature-proof-v0',
+          status: 'verified',
+          mode: 'devnet-local-signature',
+        },
+      },
+    }
+    const completedTraceWithoutComprehension =
+      await manager.saveAnnotationBundle({
+        ...draft.annotation,
+        status: 'final',
+        traceBundle: completedTraceBundle,
+        teacherJourney: {
+          ...draft.annotation.teacherJourney,
+          humanAttempt: {
+            ...draft.annotation.teacherJourney.humanAttempt,
+            completed: false,
+          },
+          localAiAttempts: draft.annotation.teacherJourney.localAiAttempts.map(
+            (attempt) => ({...attempt, completed: false})
+          ),
+          levelTransferChecks: [],
+        },
+      })
+
+    expect(completedTraceWithoutComprehension.acceptedForTraining).toBe(false)
+    expect(
+      completedTraceWithoutComprehension.annotation.annotationValidation
+    ).toMatchObject({
+      status: 'needs-more-annotation',
+      qualityTier: 'needs-completion-comprehension',
+      feedback: expect.arrayContaining([
+        expect.stringContaining('Completed runs need'),
+      ]),
+    })
+
+    const mismatchedHumanAttempt = await manager.saveAnnotationBundle({
+      ...draft.annotation,
+      status: 'final',
+      traceBundle: submitted.bundle,
+      teacherJourney: {
+        ...draft.annotation.teacherJourney,
+        humanAttempt: {
+          ...draft.annotation.teacherJourney.humanAttempt,
+          actions: [{action: 'move_left'}],
+        },
+      },
+    })
+
+    expect(mismatchedHumanAttempt.acceptedForTraining).toBe(false)
+    expect(
+      mismatchedHumanAttempt.annotation.annotationValidation.feedback
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('human attempt must match'),
+      ])
+    )
+
+    const offByOneEvidence = await manager.saveAnnotationBundle({
+      ...draft.annotation,
+      status: 'final',
+      traceBundle: submitted.bundle,
+      humanReplayAnnotation: {
+        ...draft.annotation.humanReplayAnnotation,
+        keyMoments: [
+          {
+            actionIndex: submitted.bundle.trace.actions.length,
+            description: 'This should point past the last replay action.',
+          },
+        ],
+      },
+    })
+
+    expect(offByOneEvidence.acceptedForTraining).toBe(false)
+    expect(offByOneEvidence.annotation.annotationValidation.feedback).toEqual(
+      expect.arrayContaining([expect.stringContaining('outside the trace')])
+    )
 
     const forgedButtonBundle = await manager.saveAnnotationBundle({
       ...draft.annotation,

@@ -455,48 +455,48 @@ const TEACHER_STEPS = [
 ]
 const TEACHER_FEEDBACK_BUTTONS = [
   {
-    id: 'missed-rule',
-    label: 'Missed rule',
+    id: 'local-effect-no-world-model',
+    label: 'Effect, no rule',
     failedAbstraction:
-      'Missed the hidden rule and treated the board as a plain movement puzzle.',
-    gap: 'The human tracked a rule that the AI did not model, then changed the action plan around that rule.',
+      'Noticed a local action effect but did not turn it into a usable world-model rule.',
+    gap: 'The AI saw something change, but the human used that change to infer how the game works globally.',
     correction:
-      'Before repeating an action, explain what hidden rule it is testing and what observation would disprove it.',
-    capabilityTag: 'hidden-rule-tracking',
-    adapterTarget: 'hidden-rule tracker',
+      'Name the observed effect, the rule it suggests, and the next observation that would disprove it.',
+    capabilityTag: 'world-model-from-local-effect',
+    adapterTarget: 'local-effect to world-model adapter',
   },
   {
-    id: 'looped',
-    label: 'Looped',
+    id: 'wrong-analogy',
+    label: 'Wrong analogy',
     failedAbstraction:
-      'Repeated actions without extracting a new invariant from the changed frame.',
-    gap: 'The human stopped probing once the action stopped producing new evidence; the AI kept looping.',
+      'Mapped the board to a familiar game too early and let that analogy drive action choice.',
+    gap: 'The human tested the actual action effects; the AI trusted a known-game resemblance.',
     correction:
-      'After two similar observations, switch to a different probe or state the invariant that was learned.',
-    capabilityTag: 'loop-avoidance',
-    adapterTarget: 'novelty-aware action policy',
+      'Treat analogies as weak hypotheses only. Keep or reject them from replay evidence.',
+    capabilityTag: 'analogy-risk-control',
+    adapterTarget: 'novelty-aware analogy filter',
   },
   {
-    id: 'overfit-color',
-    label: 'Overfit color',
+    id: 'accidental-win',
+    label: 'Lucky win',
     failedAbstraction:
-      'Overfit to visible colors instead of testing object roles and transitions.',
-    gap: 'The human compared object roles across steps; the AI described surface color patterns only.',
+      'Reached progress or completion without proving the rule that should transfer to the next level.',
+    gap: 'The human can explain why the step worked; the AI may have solved by coincidence.',
     correction:
-      'Name the object role and transition, not only its color, before choosing the next action.',
-    capabilityTag: 'object-role-abstraction',
-    adapterTarget: 'object-role abstraction',
+      'After a win, explain why it worked, what transfers, and what would disprove the rule.',
+    capabilityTag: 'win-comprehension-check',
+    adapterTarget: 'level-transfer verifier',
   },
   {
-    id: 'wrong-action',
-    label: 'Wrong action',
+    id: 'bad-compression',
+    label: 'Bad summary',
     failedAbstraction:
-      'Predicted the next action without linking it to replay evidence.',
-    gap: 'The human selected actions from observed effects; the AI guessed from the current frame.',
+      'Compressed the replay into a vague, overconfident, or unsupported rule memory.',
+    gap: 'The human kept evidence-linked details that the AI summary lost or distorted.',
     correction:
-      'Tie every next action to the previous observation hash or visible state change.',
-    capabilityTag: 'evidence-linked-policy',
-    adapterTarget: 'evidence-linked action policy',
+      'Compress only evidence-linked rules: action, observed effect, rule, transfer, disconfirming evidence.',
+    capabilityTag: 'evidence-linked-compression',
+    adapterTarget: 'world-model compression adapter',
   },
 ]
 const BROWSER_LOCAL_GENERATOR = {
@@ -1593,6 +1593,21 @@ function normalizeAttemptActions(actions) {
     if (item && item.runtimeError) {
       normalized.runtimeError = String(item.runtimeError)
     }
+    ;[
+      'intendedTest',
+      'expectedObservation',
+      'observedEffect',
+      'localEffect',
+      'worldModelHypothesis',
+      'hypothesisStatus',
+      'analogyRisk',
+      'nextDiscriminatingTest',
+    ].forEach((key) => {
+      if (item && typeof item[key] !== 'undefined') {
+        const value = String(item[key] || '').trim()
+        if (value) normalized[key] = value
+      }
+    })
 
     return normalized
   })
@@ -1686,6 +1701,10 @@ function buildTeacherJourney({
   compressedTeacherMemory,
   providerAnnotationDrafts,
   visualAnnotations,
+  failureModeAnnotations,
+  recognitionMoment,
+  levelTransferChecks,
+  compressionAudit,
   phase,
 }) {
   return {
@@ -1703,8 +1722,42 @@ function buildTeacherJourney({
       ? providerAnnotationDrafts
       : [],
     visualAnnotations: visualAnnotationEvidenceEvents(visualAnnotations),
+    visualEvidenceMarks: visualAnnotationEvidenceEvents(visualAnnotations),
+    recognitionMoment: recognitionMoment || null,
+    hypothesisTimeline: buildHypothesisTimeline(localAiAttempts),
+    failureModeAnnotations: Array.isArray(failureModeAnnotations)
+      ? failureModeAnnotations
+      : [],
+    levelTransferChecks: Array.isArray(levelTransferChecks)
+      ? levelTransferChecks
+      : [],
+    compressionAudit: compressionAudit || null,
     compressedTeacherMemory: compressedTeacherMemory || null,
   }
+}
+
+function buildHypothesisTimeline(localAiAttempts) {
+  return (Array.isArray(localAiAttempts) ? localAiAttempts : [])
+    .flatMap((attempt, attemptIndex) =>
+      normalizeAttemptActions(attempt && attempt.actions).map((action) => ({
+        protocol: 'idena-arc-hypothesis-event-v1',
+        attemptIndex,
+        actionIndex: action.index,
+        action: action.action,
+        stateHash: action.stateHash || null,
+        intendedTest: action.intendedTest || action.reason || '',
+        expectedObservation: action.expectedObservation || '',
+        observedEffect: action.observedEffect || action.observation || '',
+        localEffect: action.localEffect || '',
+        worldModelHypothesis: action.worldModelHypothesis || '',
+        hypothesisStatus: action.hypothesisStatus || 'new',
+        analogyRisk: action.analogyRisk || 'low',
+        nextDiscriminatingTest: action.nextDiscriminatingTest || '',
+        confidence:
+          typeof action.confidence === 'number' ? action.confidence : null,
+      }))
+    )
+    .slice(0, 256)
 }
 
 function plainTextFromLocalAiResult(result) {
@@ -1791,6 +1844,42 @@ function normalizeAiActionDecision(decision, game, fallbackAction) {
         'Probe one action and compare the next state.'
     ).slice(0, 1000),
     confidence,
+    intendedTest: String(
+      source.intendedTest ||
+        source.intent ||
+        source.test ||
+        fallback.intendedTest ||
+        ''
+    ).slice(0, 1000),
+    expectedObservation: String(
+      source.expectedObservation ||
+        source.expectedEffect ||
+        fallback.expectedObservation ||
+        ''
+    ).slice(0, 1000),
+    worldModelHypothesis: String(
+      source.worldModelHypothesis ||
+        source.ruleHypothesis ||
+        source.hypothesis ||
+        fallback.worldModelHypothesis ||
+        ''
+    ).slice(0, 1000),
+    hypothesisStatus: ['new', 'kept', 'changed', 'rejected'].includes(
+      String(source.hypothesisStatus || '').trim()
+    )
+      ? String(source.hypothesisStatus).trim()
+      : 'new',
+    analogyRisk: ['low', 'medium', 'high'].includes(
+      String(source.analogyRisk || '').trim()
+    )
+      ? String(source.analogyRisk).trim()
+      : 'low',
+    nextDiscriminatingTest: String(
+      source.nextDiscriminatingTest ||
+        source.nextTest ||
+        fallback.nextDiscriminatingTest ||
+        ''
+    ).slice(0, 1000),
   }
 
   const x = Number(typeof source.x !== 'undefined' ? source.x : fallback.x)
@@ -1878,6 +1967,10 @@ function buildLocalAiStepPrompt({
       reason: item.reason,
       observation: item.observation,
       stateHash: item.stateHash,
+      expectedObservation: item.expectedObservation,
+      observedEffect: item.observedEffect,
+      worldModelHypothesis: item.worldModelHypothesis,
+      hypothesisStatus: item.hypothesisStatus,
     }))
 
   return [
@@ -1889,6 +1982,9 @@ function buildLocalAiStepPrompt({
       ? 'For a coordinate/click action use {"action":"ACTION6","x":31,"y":31,"reason":"...","confidence":0.3}.'
       : 'For movement use {"action":"move_right","reason":"...","confidence":0.3}.',
     'When unsure, keep testing a new action and explain the expected observation.',
+    'Include these JSON keys: action, reason, intendedTest, expectedObservation, worldModelHypothesis, hypothesisStatus, analogyRisk, nextDiscriminatingTest, confidence.',
+    'hypothesisStatus must be new, kept, changed, or rejected. analogyRisk must be low, medium, or high.',
+    'Do not decide from a known-game analogy unless replay evidence supports it.',
     JSON.stringify({
       stepIndex,
       state: compactStateForPrompt(state),
@@ -2161,6 +2257,28 @@ async function runLocalAiAttemptWithPreview({
       preview,
       previousStateHash
     )
+    nextAction.observedEffect = nextAction.observation
+    nextAction.localEffect =
+      stateHash && previousStateHash && stateHash !== previousStateHash
+        ? 'The replay state hash or visible frame changed after this action.'
+        : 'No state-hash change was observed after this action.'
+    if (!nextAction.intendedTest) {
+      nextAction.intendedTest = nextAction.reason || 'Probe one action.'
+    }
+    if (!nextAction.expectedObservation) {
+      nextAction.expectedObservation =
+        'A useful action should produce a visible, score, completion, or available-action change.'
+    }
+    if (!nextAction.worldModelHypothesis) {
+      nextAction.worldModelHypothesis =
+        stateHash && previousStateHash && stateHash !== previousStateHash
+          ? 'This action may reveal a local effect that needs a global rule.'
+          : 'This action may be a no-op or require a different precondition.'
+    }
+    if (!nextAction.nextDiscriminatingTest) {
+      nextAction.nextDiscriminatingTest =
+        'Try a different action or coordinate and compare the next state hash.'
+    }
     previousStateHash = stateHash
     actionItems.push(nextAction)
 
@@ -4615,6 +4733,195 @@ function ActionButtonComparisonPanel({humanActions, aiActions}) {
   )
 }
 
+function AttemptTimelineColumn({label, colorScheme, items, emptyText}) {
+  const safeItems = Array.isArray(items) ? items : []
+  const visibleItems = safeItems.slice(0, 10)
+  const hiddenCount = Math.max(0, safeItems.length - visibleItems.length)
+
+  return (
+    <Box borderWidth="1px" borderRadius="md" bg="white" p={3} minH="180px">
+      <HStack spacing={2} mb={3}>
+        <Badge colorScheme={colorScheme}>{label}</Badge>
+        <Text color="muted" fontSize="xs">
+          {safeItems.length} step(s)
+        </Text>
+      </HStack>
+      {visibleItems.length ? (
+        <Stack spacing={2}>
+          {visibleItems.map((item, index) => {
+            const action = item.arcAction || item.action
+            const descriptor = actionButtonDescriptionForAction(action)
+            const effect =
+              item.observedEffect ||
+              item.observation ||
+              item.localEffect ||
+              item.reason ||
+              ''
+            const hypothesis =
+              item.worldModelHypothesis ||
+              item.nextDiscriminatingTest ||
+              item.expectedObservation ||
+              ''
+
+            return (
+              <Box
+                key={`${label}:${index}:${action}`}
+                borderWidth="1px"
+                borderColor="gray.100"
+                borderRadius="md"
+                p={2}
+              >
+                <HStack spacing={2} mb={1} flexWrap="wrap">
+                  <Badge colorScheme={colorScheme}>{index + 1}</Badge>
+                  <Text fontSize="sm" fontWeight={700}>
+                    {descriptor.buttonLabel}
+                  </Text>
+                  <Text fontSize="xs" color="muted">
+                    {descriptor.action}
+                  </Text>
+                  {item.analogyRisk && item.analogyRisk !== 'low' ? (
+                    <Badge colorScheme="orange">
+                      analogy {item.analogyRisk}
+                    </Badge>
+                  ) : null}
+                </HStack>
+                {effect ? (
+                  <Text fontSize="xs" color="brandGray.500" noOfLines={2}>
+                    {effect}
+                  </Text>
+                ) : null}
+                {hypothesis ? (
+                  <Text mt={1} fontSize="xs" color="muted" noOfLines={2}>
+                    {hypothesis}
+                  </Text>
+                ) : null}
+              </Box>
+            )
+          })}
+          {hiddenCount ? (
+            <Text color="muted" fontSize="xs">
+              + {hiddenCount} more step(s)
+            </Text>
+          ) : null}
+        </Stack>
+      ) : (
+        <Center minH="110px" borderRadius="md" bg="gray.50">
+          <Text color="muted" fontSize="sm">
+            {emptyText}
+          </Text>
+        </Center>
+      )}
+    </Box>
+  )
+}
+
+function HumanAiTimelineComparisonPanel({
+  humanActions,
+  aiActions,
+  failureModeAnnotations,
+}) {
+  const humanItems = attemptActionItemsFromTimeline(humanActions)
+  const aiItems = normalizeAttemptActions(aiActions)
+  const failureItems = Array.isArray(failureModeAnnotations)
+    ? failureModeAnnotations
+    : []
+
+  if (!humanItems.length && !aiItems.length) return null
+
+  return (
+    <Box bg="gray.50" borderRadius="md" borderWidth="1px" p={4}>
+      <Flex justify="space-between" gap={3} flexWrap="wrap" mb={3}>
+        <Box>
+          <HStack spacing={2} flexWrap="wrap">
+            <Badge colorScheme="blue">Compare traces</Badge>
+            <Text fontSize="sm" color="brandGray.500">
+              same button language, different reasoning
+            </Text>
+          </HStack>
+        </Box>
+        {failureItems.length ? (
+          <HStack spacing={2} flexWrap="wrap">
+            {failureItems.slice(0, 4).map((item) => (
+              <Badge key={item.id || item.label} colorScheme="orange">
+                {item.label || item.failureMode}
+              </Badge>
+            ))}
+          </HStack>
+        ) : null}
+      </Flex>
+      <SimpleGrid columns={[1, null, 2]} spacing={3}>
+        <AttemptTimelineColumn
+          label="Human"
+          colorScheme="blue"
+          items={humanItems}
+          emptyText="End your run first."
+        />
+        <AttemptTimelineColumn
+          label="Local AI"
+          colorScheme="purple"
+          items={aiItems}
+          emptyText="Run local AI to compare."
+        />
+      </SimpleGrid>
+    </Box>
+  )
+}
+
+function trainingTaskCountsFromExample(example) {
+  return (
+    Array.isArray(example && example.trainingTasks) ? example.trainingTasks : []
+  ).reduce((acc, task) => {
+    const taskType = task && task.taskType ? task.taskType : 'unknown'
+    acc[taskType] = (acc[taskType] || 0) + 1
+    return acc
+  }, {})
+}
+
+function TrainingLessonSummary({annotationBundle, trainingDataset}) {
+  const example = annotationBundle && annotationBundle.trainingExample
+  const taskTypeCounts =
+    (trainingDataset && trainingDataset.taskTypeCounts) ||
+    trainingTaskCountsFromExample(example)
+  const taskRows = Object.entries(taskTypeCounts || {})
+  const negativeExampleCount =
+    (trainingDataset && trainingDataset.negativeExampleCount) ||
+    (example && example.target && Array.isArray(example.target.negativeExamples)
+      ? example.target.negativeExamples.length
+      : 0)
+  const preferencePairCount =
+    (trainingDataset && trainingDataset.preferencePairCount) ||
+    (example && example.target && Array.isArray(example.target.preferencePairs)
+      ? example.target.preferencePairs.length
+      : 0)
+
+  if (!taskRows.length && !negativeExampleCount && !preferencePairCount) {
+    return null
+  }
+
+  return (
+    <Box bg="green.50" borderWidth="1px" borderColor="green.100" p={3}>
+      <HStack spacing={2} mb={2} flexWrap="wrap">
+        <Badge colorScheme="green">Training lesson</Badge>
+        {negativeExampleCount ? (
+          <Badge colorScheme="orange">{negativeExampleCount} negative</Badge>
+        ) : null}
+        {preferencePairCount ? (
+          <Badge colorScheme="purple">{preferencePairCount} preference</Badge>
+        ) : null}
+      </HStack>
+      {taskRows.length ? (
+        <HStack spacing={2} flexWrap="wrap">
+          {taskRows.map(([taskType, count]) => (
+            <Badge key={taskType} colorScheme="green" variant="subtle">
+              {taskType.replace(/_/g, ' ')} · {count}
+            </Badge>
+          ))}
+        </HStack>
+      ) : null}
+    </Box>
+  )
+}
+
 function VisualTeachingMarksPanel({
   frame,
   markers,
@@ -4810,6 +5117,19 @@ function TeacherLoopPanel({
   setVisualAnnotations,
   confirmedRules,
   setConfirmedRules,
+  recognitionActionIndex,
+  setRecognitionActionIndex,
+  recognitionNotes,
+  setRecognitionNotes,
+  completionExplanation,
+  setCompletionExplanation,
+  transferRule,
+  setTransferRule,
+  disconfirmingRule,
+  setDisconfirmingRule,
+  completionNeedsComprehension,
+  completionComprehensionReady,
+  failureModeAnnotations,
   humanVsAiGap,
   setHumanVsAiGap,
   teachingNotes,
@@ -4902,6 +5222,9 @@ function TeacherLoopPanel({
   const aiAttemptActionItems = latestAiAttempt
     ? normalizeAttemptActions(latestAiAttempt.actions)
     : parseActions(localAiAttemptActions)
+  const analogyRiskActions = aiAttemptActionItems.filter(
+    (item) => item.analogyRisk && item.analogyRisk !== 'low'
+  )
   const aiTimeline = Array.isArray(localAiReplay && localAiReplay.timeline)
     ? localAiReplay.timeline
     : []
@@ -5105,7 +5428,11 @@ function TeacherLoopPanel({
         </SecondaryButton>
         <PrimaryButton
           isLoading={busy === 'Finalize annotation'}
-          isDisabled={!humanAttempt || !latestAiAttempt}
+          isDisabled={
+            !humanAttempt ||
+            !latestAiAttempt ||
+            (completionNeedsComprehension && !completionComprehensionReady)
+          }
           onClick={() => handleSaveAnnotation('final')}
         >
           Save lesson
@@ -5115,12 +5442,23 @@ function TeacherLoopPanel({
         ) : null}
       </HStack>
 
+      <TrainingLessonSummary
+        annotationBundle={annotationBundle}
+        trainingDataset={trainingDataset}
+      />
+
       {showExpertMode ? (
         <ActionButtonComparisonPanel
           humanActions={actionTimeline}
           aiActions={aiAttemptActionItems}
         />
       ) : null}
+
+      <HumanAiTimelineComparisonPanel
+        humanActions={actionTimeline}
+        aiActions={aiAttemptActionItems}
+        failureModeAnnotations={failureModeAnnotations}
+      />
 
       <Grid templateColumns={['1fr', null, '1fr 1fr']} gap={5}>
         <Stack spacing={4}>
@@ -5172,6 +5510,32 @@ function TeacherLoopPanel({
               placeholder="One teachable rule per line"
             />
           </Field>
+          <SimpleGrid columns={[1, 2]} spacing={3}>
+            <Field label="Moment it clicked">
+              <Select
+                value={recognitionActionIndex}
+                onChange={(event) =>
+                  setRecognitionActionIndex(event.target.value)
+                }
+                isDisabled={!humanAttempt}
+              >
+                <option value="">Pick action</option>
+                {actionTimeline.map((item, index) => (
+                  <option key={`${item.action}:${index}`} value={index}>
+                    {index + 1}. {actionButtonShortLabel(item.action)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Why that moment mattered">
+              <Input
+                value={recognitionNotes}
+                onChange={(event) => setRecognitionNotes(event.target.value)}
+                placeholder="X changed, so Y became clear"
+                isDisabled={!humanAttempt}
+              />
+            </Field>
+          </SimpleGrid>
           <VisualTeachingMarksPanel
             frame={visualTeachingFrame}
             markers={visualAnnotations}
@@ -5179,6 +5543,59 @@ function TeacherLoopPanel({
             actionTimeline={actionTimeline}
             isDisabled={!humanAttempt}
           />
+          {completionNeedsComprehension ? (
+            <Box
+              borderWidth="1px"
+              borderColor={
+                completionComprehensionReady ? 'green.200' : 'orange.200'
+              }
+              bg={completionComprehensionReady ? 'green.50' : 'orange.50'}
+              borderRadius="md"
+              p={3}
+            >
+              <HStack spacing={2} mb={3}>
+                <Badge
+                  colorScheme={
+                    completionComprehensionReady ? 'green' : 'orange'
+                  }
+                >
+                  {completionComprehensionReady
+                    ? 'win understood'
+                    : 'won but not understood'}
+                </Badge>
+                <Text fontSize="sm" color="brandGray.500">
+                  A win needs an evidence-linked rule before training.
+                </Text>
+              </HStack>
+              <Stack spacing={3}>
+                <Field label="Why did it work?">
+                  <Input
+                    value={completionExplanation}
+                    onChange={(event) =>
+                      setCompletionExplanation(event.target.value)
+                    }
+                    placeholder="The decisive action worked because..."
+                  />
+                </Field>
+                <Field label="What transfers?">
+                  <Input
+                    value={transferRule}
+                    onChange={(event) => setTransferRule(event.target.value)}
+                    placeholder="The next level should reuse..."
+                  />
+                </Field>
+                <Field label="What would disprove it?">
+                  <Input
+                    value={disconfirmingRule}
+                    onChange={(event) =>
+                      setDisconfirmingRule(event.target.value)
+                    }
+                    placeholder="If this observation fails, reject the rule"
+                  />
+                </Field>
+              </Stack>
+            </Box>
+          ) : null}
         </Stack>
 
         <Stack spacing={4}>
@@ -5427,6 +5844,30 @@ function TeacherLoopPanel({
               placeholder="AI explains the attempt, uncertainty, and question for the teacher"
             />
           </Field>
+          {analogyRiskActions.length ? (
+            <Box
+              bg="orange.50"
+              borderWidth="1px"
+              borderColor="orange.200"
+              p={3}
+            >
+              <HStack spacing={2} mb={2}>
+                <Badge colorScheme="orange">AI thought it was like...</Badge>
+                <Text fontSize="sm" color="brandGray.500">
+                  Check whether the analogy is supported by replay evidence.
+                </Text>
+              </HStack>
+              <Stack spacing={1}>
+                {analogyRiskActions.slice(0, 3).map((item) => (
+                  <Text key={`${item.index}:${item.action}`} fontSize="xs">
+                    {item.index + 1}. {item.action}: analogy risk{' '}
+                    {item.analogyRisk}; hypothesis:{' '}
+                    {item.worldModelHypothesis || 'not stated'}
+                  </Text>
+                ))}
+              </Stack>
+            </Box>
+          ) : null}
         </Stack>
       </Grid>
 
@@ -5447,6 +5888,16 @@ function TeacherLoopPanel({
                 </SecondaryButton>
               ))}
             </HStack>
+            {Array.isArray(failureModeAnnotations) &&
+            failureModeAnnotations.length ? (
+              <HStack spacing={2} mt={3} flexWrap="wrap">
+                {failureModeAnnotations.map((item) => (
+                  <Badge key={item.id || item.label} colorScheme="orange">
+                    {item.label || item.failureMode}
+                  </Badge>
+                ))}
+              </HStack>
+            ) : null}
           </Box>
           <Field label="What did AI miss?">
             <Textarea
@@ -5493,7 +5944,10 @@ function TeacherLoopPanel({
             <PrimaryButton
               isLoading={busy === 'Finalize annotation'}
               isDisabled={
-                !traceBundleReady || !humanAttempt || !latestAiAttempt
+                !traceBundleReady ||
+                !humanAttempt ||
+                !latestAiAttempt ||
+                (completionNeedsComprehension && !completionComprehensionReady)
               }
               onClick={() => handleSaveAnnotation('final')}
             >
@@ -6795,6 +7249,10 @@ export default function IdenaArcPage() {
   const [recognitionNotes, setRecognitionNotes] = React.useState('')
   const [evidenceEvents, setEvidenceEvents] = React.useState('')
   const [visualAnnotations, setVisualAnnotations] = React.useState([])
+  const [failureModeAnnotations, setFailureModeAnnotations] = React.useState([])
+  const [completionExplanation, setCompletionExplanation] = React.useState('')
+  const [transferRule, setTransferRule] = React.useState('')
+  const [disconfirmingRule, setDisconfirmingRule] = React.useState('')
   const [strategyChange, setStrategyChange] = React.useState('')
   const [teachingNotes, setTeachingNotes] = React.useState('')
   const [localAiGameplayExplanation, setLocalAiGameplayExplanation] =
@@ -6927,6 +7385,69 @@ export default function IdenaArcPage() {
     () => latestAttempt(localAiAttempts),
     [localAiAttempts]
   )
+  const recognitionMoment = React.useMemo(
+    () =>
+      String(recognitionActionIndex || '').trim() ||
+      String(recognitionNotes || '').trim()
+        ? {
+            actionIndex: recognitionActionIndex,
+            description: recognitionNotes,
+          }
+        : null,
+    [recognitionActionIndex, recognitionNotes]
+  )
+  const levelTransferChecks = React.useMemo(() => {
+    if (
+      !String(completionExplanation || '').trim() &&
+      !String(transferRule || '').trim() &&
+      !String(disconfirmingRule || '').trim()
+    ) {
+      return []
+    }
+
+    return [
+      {
+        protocol: 'idena-arc-level-transfer-check-v1',
+        createdAt: new Date().toISOString(),
+        whyItWorked: completionExplanation,
+        shouldTransfer: transferRule,
+        disconfirmingEvidence: disconfirmingRule,
+      },
+    ]
+  }, [completionExplanation, disconfirmingRule, transferRule])
+  const completionNeedsComprehension = Boolean(
+    (humanAttempt && humanAttempt.completed) ||
+      (latestLocalAiAttempt && latestLocalAiAttempt.completed)
+  )
+  const completionComprehensionReady = Boolean(
+    String(completionExplanation || '').trim() &&
+      String(transferRule || '').trim() &&
+      String(disconfirmingRule || '').trim()
+  )
+  const compressionAudit = React.useMemo(
+    () => ({
+      protocol: 'idena-arc-compression-audit-v1',
+      status:
+        !completionNeedsComprehension || completionComprehensionReady
+          ? 'evidence_linked'
+          : 'needs_completion_check',
+      hasCompressedMemory: Boolean(
+        compressedTeacherMemory && compressedTeacherMemory.compressedText
+      ),
+      hasRecognitionMoment: Boolean(recognitionMoment),
+      failureModeCount: Array.isArray(failureModeAnnotations)
+        ? failureModeAnnotations.length
+        : 0,
+      completionComprehensionReady,
+    }),
+    [
+      compressedTeacherMemory,
+      completionComprehensionReady,
+      completionNeedsComprehension,
+      failureModeAnnotations,
+      recognitionMoment,
+    ]
+  )
   const teacherJourney = React.useMemo(
     () =>
       buildTeacherJourney({
@@ -6938,15 +7459,23 @@ export default function IdenaArcPage() {
         compressedTeacherMemory,
         providerAnnotationDrafts,
         visualAnnotations,
+        failureModeAnnotations,
+        recognitionMoment,
+        levelTransferChecks,
+        compressionAudit,
         phase: attemptPhase,
       }),
     [
       attemptPhase,
       compressedTeacherMemory,
+      compressionAudit,
+      failureModeAnnotations,
       game,
       humanAttempt,
+      levelTransferChecks,
       localAiAttempts,
       providerAnnotationDrafts,
+      recognitionMoment,
       selectedArcAgiGame,
       teacherRounds,
       visualAnnotations,
@@ -7179,10 +7708,7 @@ export default function IdenaArcPage() {
         ruleHypotheses,
         confirmedRules,
         evidenceEvents: typedEvidenceEvents.concat(visualEvidenceEvents),
-        recognitionMoment: {
-          actionIndex: recognitionActionIndex,
-          description: recognitionNotes,
-        },
+        recognitionMoment,
         wrongHypotheses,
         strategyChange,
         difficulty: 3,
@@ -7231,6 +7757,7 @@ export default function IdenaArcPage() {
         capabilityTags,
         suggestedAdapterTarget,
         actionButtonComparison,
+        failureModeAnnotations,
       },
       teacherJourney,
       compressedTeacherMemory,
@@ -7245,6 +7772,7 @@ export default function IdenaArcPage() {
     capabilityTags,
     confirmedRules,
     evidenceEvents,
+    failureModeAnnotations,
     humanVsAiGap,
     humanReplayCorrections,
     humanReplayActionPolicy,
@@ -7264,8 +7792,7 @@ export default function IdenaArcPage() {
     localAiGameplaySummary,
     localAiUncertaintyNotes,
     missingCapability,
-    recognitionActionIndex,
-    recognitionNotes,
+    recognitionMoment,
     ruleHypotheses,
     strategyChange,
     suggestedAdapterTarget,
@@ -7556,6 +8083,12 @@ export default function IdenaArcPage() {
     setLocalAiReplayIndex(0)
     setLocalAiReplayPlaying(false)
     setVisualAnnotations([])
+    setFailureModeAnnotations([])
+    setCompletionExplanation('')
+    setTransferRule('')
+    setDisconfirmingRule('')
+    setRecognitionActionIndex('')
+    setRecognitionNotes('')
     setAttemptPhase(nextGame ? 'human_play' : 'setup')
     setHumanAttempt(null)
     setLocalAiAttempts([])
@@ -8162,6 +8695,12 @@ export default function IdenaArcPage() {
     setLocalAiReplayIndex(0)
     setLocalAiReplayPlaying(false)
     setVisualAnnotations([])
+    setFailureModeAnnotations([])
+    setCompletionExplanation('')
+    setTransferRule('')
+    setDisconfirmingRule('')
+    setRecognitionActionIndex('')
+    setRecognitionNotes('')
     setLocalAiAttemptActions('')
     setLocalAiGameplayExplanation('')
     setLocalAiGameplaySummary('')
@@ -8295,7 +8834,11 @@ export default function IdenaArcPage() {
           (item, index) =>
             `${index + 1}. ${item.action}: ${item.reason || 'No reason'} -> ${
               item.observation || 'no observation'
-            }`
+            }. Expected: ${
+              item.expectedObservation || 'unknown'
+            }. Hypothesis: ${
+              item.worldModelHypothesis || 'unknown'
+            }. Next test: ${item.nextDiscriminatingTest || 'unknown'}`
         )
         .join('\n')
       const explanation = [
@@ -8389,6 +8932,17 @@ export default function IdenaArcPage() {
 
   const handleApplyTeacherFeedback = React.useCallback((item) => {
     if (!item) return
+    const failureAnnotation = {
+      protocol: 'idena-arc-failure-mode-annotation-v1',
+      id: item.id,
+      label: item.label,
+      createdAt: new Date().toISOString(),
+      failureMode: item.id,
+      failedAbstraction: item.failedAbstraction,
+      humanCorrection: item.correction,
+      capabilityTag: item.capabilityTag,
+      adapterTarget: item.adapterTarget,
+    }
 
     setAiFailedAbstractions((current) =>
       appendAnnotationText(current, item.failedAbstraction)
@@ -8412,6 +8966,11 @@ export default function IdenaArcPage() {
         .filter(Boolean)
 
       return tags.includes(tag) ? tags.join(', ') : tags.concat(tag).join(', ')
+    })
+    setFailureModeAnnotations((current) => {
+      const list = Array.isArray(current) ? current : []
+      const exists = list.some((entry) => entry && entry.id === item.id)
+      return exists ? list : list.concat(failureAnnotation)
     })
     setTeacherStep('coach')
   }, [])
@@ -8437,7 +8996,8 @@ export default function IdenaArcPage() {
       )}`,
       aiComparison: comparisonText,
       humanFeedback: '',
-      quickMarks: [],
+      quickMarks: failureModeAnnotations.map((item) => item.id).filter(Boolean),
+      failureModeAnnotations,
       compressedMemory: compressedTeacherMemory,
       retryAttemptIndex: null,
     }
@@ -8448,6 +9008,7 @@ export default function IdenaArcPage() {
     setTeacherStep('coach')
   }, [
     compressedTeacherMemory,
+    failureModeAnnotations,
     humanAttempt,
     humanReplayCorrections,
     localAiAttempts,
@@ -8462,6 +9023,10 @@ export default function IdenaArcPage() {
       humanReplayCorrections,
       confirmedRules,
       recognitionNotes,
+      completionExplanation,
+      transferRule,
+      disconfirmingRule,
+      failureModeAnnotations.map((item) => item.label).join(', '),
     ]
       .filter((value) => String(value || '').trim())
       .join('\n')
@@ -8486,10 +9051,14 @@ export default function IdenaArcPage() {
     return memory
   }, [
     confirmedRules,
+    completionExplanation,
+    disconfirmingRule,
+    failureModeAnnotations,
     humanReplayCorrections,
     humanVsAiGap,
     recognitionNotes,
     teachingNotes,
+    transferRule,
   ])
 
   const handleRetryLocalAiAttempt = React.useCallback(async () => {
@@ -8518,6 +9087,23 @@ export default function IdenaArcPage() {
 
   const handleSaveAnnotation = React.useCallback(
     async (nextStatus) => {
+      if (
+        nextStatus === 'final' &&
+        completionNeedsComprehension &&
+        !completionComprehensionReady
+      ) {
+        toast({
+          title: 'Explain the win first',
+          description:
+            'A completed run needs why it worked, what transfers, and what would disprove the rule before it becomes training data.',
+          status: 'warning',
+          duration: 5000,
+          isClosable: true,
+        })
+        setTeacherStep('coach')
+        return null
+      }
+
       setAnnotationStatus(nextStatus)
       let finalMemory = compressedTeacherMemory
       if (nextStatus === 'final') {
@@ -8584,10 +9170,13 @@ export default function IdenaArcPage() {
       attemptPhase,
       basePayload,
       compressCurrentTeacherFeedback,
+      completionComprehensionReady,
+      completionNeedsComprehension,
       compressedTeacherMemory,
       humanAttempt,
       run,
       teacherJourney,
+      toast,
     ]
   )
 
@@ -9395,6 +9984,19 @@ export default function IdenaArcPage() {
             setVisualAnnotations={setVisualAnnotations}
             confirmedRules={confirmedRules}
             setConfirmedRules={setConfirmedRules}
+            recognitionActionIndex={recognitionActionIndex}
+            setRecognitionActionIndex={setRecognitionActionIndex}
+            recognitionNotes={recognitionNotes}
+            setRecognitionNotes={setRecognitionNotes}
+            completionExplanation={completionExplanation}
+            setCompletionExplanation={setCompletionExplanation}
+            transferRule={transferRule}
+            setTransferRule={setTransferRule}
+            disconfirmingRule={disconfirmingRule}
+            setDisconfirmingRule={setDisconfirmingRule}
+            completionNeedsComprehension={completionNeedsComprehension}
+            completionComprehensionReady={completionComprehensionReady}
+            failureModeAnnotations={failureModeAnnotations}
             humanVsAiGap={humanVsAiGap}
             setHumanVsAiGap={setHumanVsAiGap}
             teachingNotes={teachingNotes}

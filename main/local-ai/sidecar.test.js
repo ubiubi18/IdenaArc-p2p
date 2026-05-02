@@ -786,6 +786,100 @@ describe('local-ai sidecar', () => {
     )
   })
 
+  it('disables Ollama thinking for the recommended Qwen chat model', async () => {
+    const httpClient = {
+      post: jest.fn(async () =>
+        mockOllamaChatResponse(
+          'Fast local chat.',
+          'idenaarc-qwen36-27b-claude-opus:q4km'
+        )
+      ),
+    }
+    const sidecar = createLocalAiSidecar({httpClient})
+
+    await expect(
+      sidecar.chat({
+        runtimeType: 'ollama',
+        baseUrl: 'http://127.0.0.1:11434',
+        model: 'idenaarc-qwen36-27b-claude-opus:q4km',
+        input: 'Say hello.',
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      model: 'idenaarc-qwen36-27b-claude-opus:q4km',
+      text: 'Fast local chat.',
+    })
+
+    expect(httpClient.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:11434/api/chat',
+      expect.objectContaining({
+        model: 'idenaarc-qwen36-27b-claude-opus:q4km',
+        think: false,
+      }),
+      expect.objectContaining({
+        timeout: 15000,
+      })
+    )
+  })
+
+  it('falls back when the recommended Qwen chat model only returns reasoning', async () => {
+    const httpClient = {
+      post: jest
+        .fn()
+        .mockResolvedValueOnce(
+          mockOllamaChatResponse(
+            '\n<think>\nStill planning the reply.',
+            'idenaarc-qwen36-27b-claude-opus:q4km'
+          )
+        )
+        .mockResolvedValueOnce(mockOllamaChatResponse('ok', 'qwen3.5:9b')),
+    }
+    const sidecar = createLocalAiSidecar({httpClient})
+
+    await expect(
+      sidecar.chat({
+        runtimeType: 'ollama',
+        baseUrl: 'http://127.0.0.1:11434',
+        model: 'idenaarc-qwen36-27b-claude-opus:q4km',
+        modelFallbacks: ['qwen3.5:9b'],
+        generationOptions: {
+          temperature: 0,
+          num_predict: 32,
+        },
+        fallbackGenerationOptions: {
+          temperature: 0,
+          num_predict: 256,
+        },
+        input: 'Reply with ok.',
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      text: 'ok',
+      content: 'ok',
+      requestedModel: 'idenaarc-qwen36-27b-claude-opus:q4km',
+      activeModel: 'qwen3.5:9b',
+      fallbackUsed: true,
+    })
+
+    expect(httpClient.post).toHaveBeenCalledTimes(2)
+    expect(httpClient.post.mock.calls[0][1]).toMatchObject({
+      model: 'idenaarc-qwen36-27b-claude-opus:q4km',
+      think: false,
+      options: {
+        temperature: 0,
+        num_predict: 32,
+      },
+    })
+    expect(httpClient.post.mock.calls[1][1]).toMatchObject({
+      model: 'qwen3.5:9b',
+      think: false,
+      options: {
+        temperature: 0,
+        num_predict: 256,
+      },
+    })
+  })
+
   it('accepts alternate Ollama response shapes for assistant text', async () => {
     const httpClient = {
       post: jest

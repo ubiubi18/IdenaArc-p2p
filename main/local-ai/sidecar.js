@@ -596,7 +596,13 @@ function supportsOllamaThinkingToggle(model) {
   }
 
   return (
-    nextModel.startsWith('deepseek-r1') || nextModel.includes('/deepseek-r1')
+    nextModel.startsWith('deepseek-r1') ||
+    nextModel.includes('/deepseek-r1') ||
+    nextModel.startsWith('qwen3') ||
+    nextModel.startsWith('qwen36') ||
+    nextModel.startsWith('qwen35') ||
+    nextModel.includes('/qwen3') ||
+    nextModel.includes('idenaarc-qwen36')
   )
 }
 
@@ -826,6 +832,10 @@ function stripLeadingReasoningBlock(value) {
     return ''
   }
 
+  if (/^<think>/iu.test(text) && !/<\/think>/iu.test(text)) {
+    return ''
+  }
+
   const match = text.match(/^<think>[\s\S]*?<\/think>\s*/iu)
 
   if (!match) {
@@ -833,6 +843,40 @@ function stripLeadingReasoningBlock(value) {
   }
 
   return text.slice(match[0].length).trim()
+}
+
+function isReasoningOnlyText(value) {
+  const text = String(value || '').trim()
+  return /^<think>/iu.test(text) && !stripLeadingReasoningBlock(text)
+}
+
+function hasReasoningOnlyOllamaContent(data) {
+  if (!data || typeof data !== 'object') {
+    return false
+  }
+
+  return [
+    normalizeAssistantTextCandidate(data.message),
+    normalizeAssistantTextCandidate(data.message && data.message.content),
+    normalizeAssistantTextCandidate(data.response),
+    normalizeAssistantTextCandidate(data.content),
+    normalizeAssistantTextCandidate(data.output_text),
+    normalizeAssistantTextCandidate(data.generated_text),
+    normalizeAssistantTextCandidate(data.result),
+    normalizeAssistantTextCandidate(
+      Array.isArray(data.choices) ? data.choices[0] : null
+    ),
+    normalizeAssistantTextCandidate(
+      Array.isArray(data.choices) && data.choices[0]
+        ? data.choices[0].message
+        : null
+    ),
+    normalizeAssistantTextCandidate(
+      Array.isArray(data.choices) && data.choices[0]
+        ? data.choices[0].delta
+        : null
+    ),
+  ].some(isReasoningOnlyText)
 }
 
 function normalizeOllamaContent(data) {
@@ -1625,6 +1669,7 @@ function createLocalAiSidecar({
           ? response.data
           : null
       const text = normalizeOllamaContent(data)
+      const reasoningOnly = hasReasoningOnlyOllamaContent(data)
 
       if (!text) {
         return {
@@ -1637,8 +1682,10 @@ function createLocalAiSidecar({
           baseUrl: nextBaseUrl,
           endpoint,
           text: null,
-          error: 'invalid_response',
-          lastError: 'Local AI Ollama response did not include assistant text',
+          error: reasoningOnly ? 'reasoning_only_response' : 'invalid_response',
+          lastError: reasoningOnly
+            ? 'Local AI Ollama response only included a reasoning block before the reply cap.'
+            : 'Local AI Ollama response did not include assistant text',
         }
       }
 
@@ -2051,6 +2098,7 @@ function createLocalAiSidecar({
     timeoutMs = 15 * 1000,
     responseFormat = null,
     generationOptions = null,
+    fallbackGenerationOptions = null,
     modelFallbacks = [],
     visionModelFallbacks = [],
   } = {}) {
@@ -2135,6 +2183,16 @@ function createLocalAiSidecar({
       const candidateModel = includesImages
         ? candidateVisionModel
         : String(candidateVisionModel || '').trim()
+      let activeGenerationOptions = generationOptions
+
+      if (
+        !includesImages &&
+        fallbackGenerationOptions &&
+        candidateModel !== textModelCandidates[0]
+      ) {
+        activeGenerationOptions = fallbackGenerationOptions
+      }
+
       // eslint-disable-next-line no-await-in-loop
       result = await requestRuntimeChat({
         baseUrl,
@@ -2146,7 +2204,7 @@ function createLocalAiSidecar({
         messages: nextMessages,
         timeoutMs,
         responseFormat,
-        generationOptions,
+        generationOptions: activeGenerationOptions,
       })
       modelAttempts.push({
         model: candidateModel,

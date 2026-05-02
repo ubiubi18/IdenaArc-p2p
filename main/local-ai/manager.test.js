@@ -5405,6 +5405,15 @@ describe('local-ai manager', () => {
       manager.chat({
         runtimeBackend: 'ollama-direct',
         model: 'reasoner-lab:latest',
+        modelFallbacks: ['qwen3.5:9b'],
+        generationOptions: {
+          temperature: 0,
+          num_predict: 256,
+        },
+        fallbackGenerationOptions: {
+          temperature: 0,
+          num_predict: 32,
+        },
         prompt: 'hello',
       })
     ).resolves.toMatchObject({
@@ -5421,6 +5430,15 @@ describe('local-ai manager', () => {
         runtimeBackend: 'ollama-direct',
         runtimeType: 'ollama',
         model: 'reasoner-lab:latest',
+        modelFallbacks: ['qwen3.5:9b'],
+        generationOptions: {
+          temperature: 0,
+          num_predict: 256,
+        },
+        fallbackGenerationOptions: {
+          temperature: 0,
+          num_predict: 32,
+        },
       })
     )
   })

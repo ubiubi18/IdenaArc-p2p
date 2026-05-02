@@ -824,6 +824,21 @@ function sanitizeLocalAiGenerationOptions(value) {
   }
 }
 
+function sanitizeOptionalLocalAiGenerationOptions(value) {
+  return isPlainObject(value) ? sanitizeLocalAiGenerationOptions(value) : null
+}
+
+function sanitizeLocalAiModelFallbacks(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .slice(0, 8)
+    .map((item) => sanitizeOptionalBoundedString(item, 256))
+    .filter(Boolean)
+}
+
 function sanitizeLocalAiResponseFormat(value) {
   if (typeof value === 'string') {
     return sanitizeOptionalBoundedString(value, 32)
@@ -904,6 +919,13 @@ function sanitizeLocalAiRuntimePayload(payload = {}) {
     messages: sanitizeLocalAiMessages(source.messages),
     generationOptions: sanitizeLocalAiGenerationOptions(
       source.generationOptions
+    ),
+    fallbackGenerationOptions: sanitizeOptionalLocalAiGenerationOptions(
+      source.fallbackGenerationOptions
+    ),
+    modelFallbacks: sanitizeLocalAiModelFallbacks(source.modelFallbacks),
+    visionModelFallbacks: sanitizeLocalAiModelFallbacks(
+      source.visionModelFallbacks
     ),
     developerHumanTeacherSystemPrompt: sanitizeOptionalBoundedString(
       source.developerHumanTeacherSystemPrompt,
@@ -1920,8 +1942,16 @@ const bridge = {
   invites: invitesBridge,
 }
 
-contextBridge.exposeInMainWorld('idena', bridge)
+if (contextBridge && typeof contextBridge.exposeInMainWorld === 'function') {
+  contextBridge.exposeInMainWorld('idena', bridge)
+}
 
 if (typeof window !== 'undefined') {
   window.dispatchEvent(new window.Event('idena-preload-ready'))
+}
+
+module.exports = {
+  __test__: {
+    sanitizeLocalAiRuntimePayload,
+  },
 }

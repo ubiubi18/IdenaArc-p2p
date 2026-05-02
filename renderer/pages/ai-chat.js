@@ -64,6 +64,7 @@ import {
   INTERNVL3_5_8B_RESEARCH_RUNTIME_FAMILY,
   MANAGED_LOCAL_RUNTIME_FAMILIES,
   MOLMO2_4B_RESEARCH_RUNTIME_FAMILY,
+  RECOMMENDED_LOCAL_AI_OLLAMA_MODEL,
   buildManagedLocalAiTrustApprovalPatch,
   buildLocalAiRepairPreset,
   buildManagedLocalRuntimePreset,
@@ -94,6 +95,7 @@ const CHAT_COMPOSER_COLLAPSED_HEIGHT = 58
 const MANAGED_RUNTIME_DEFAULT_RESERVE_GIB = 6
 const CHAT_COMPOSER_EXPANDED_MIN_HEIGHT = 96
 const CHAT_COMPOSER_EXPANDED_MAX_HEIGHT = 240
+const CHAT_LOCAL_AI_OLLAMA_MODEL = 'qwen3.5:9b'
 const SYSTEM_CHAT_MESSAGE = {
   role: 'system',
   content:
@@ -370,6 +372,15 @@ function formatRuntimeStatusError(result, t) {
 
   if (message === 'local_ai_unavailable') {
     return t('The configured Local AI runtime is not reachable yet.')
+  }
+
+  if (
+    message === 'reasoning_only_response' ||
+    /reasoning block/i.test(message)
+  ) {
+    return t(
+      'The selected local model only produced hidden reasoning before the reply cap. Try again, use the chat fallback, or choose a smaller local chat model.'
+    )
   }
 
   if (
@@ -1864,8 +1875,31 @@ export default function AiChatPage() {
             outgoingAttachments.length > 0 && entry.id === userMessage.id,
         })
       )
+      const isTextOnlyRecommendedQwenChat =
+        outgoingAttachments.length === 0 &&
+        String(runtimePayload.model || '').trim() ===
+          RECOMMENDED_LOCAL_AI_OLLAMA_MODEL
+      const chatRuntimePayload = isTextOnlyRecommendedQwenChat
+        ? {
+            ...runtimePayload,
+            model: CHAT_LOCAL_AI_OLLAMA_MODEL,
+          }
+        : runtimePayload
+      const generationOptions = {
+        temperature: 0,
+        num_predict: 256,
+      }
+      const fallbackGenerationOptions = isTextOnlyRecommendedQwenChat
+        ? {
+            temperature: 0,
+            num_predict: 32,
+          }
+        : null
+      const modelFallbacks = isTextOnlyRecommendedQwenChat
+        ? [RECOMMENDED_LOCAL_AI_OLLAMA_MODEL]
+        : []
       const result = await bridge.chat({
-        ...runtimePayload,
+        ...chatRuntimePayload,
         messages: [
           SYSTEM_CHAT_MESSAGE,
           ...(followUpFlipContext
@@ -1891,13 +1925,9 @@ export default function AiChatPage() {
             : []),
           ...bridgeMessages,
         ],
-        generationOptions:
-          outgoingAttachments.length > 0
-            ? {
-                temperature: 0,
-                num_predict: 256,
-              }
-            : null,
+        generationOptions,
+        fallbackGenerationOptions,
+        modelFallbacks,
         timeoutMs: outgoingAttachments.length > 0 ? 90 * 1000 : 60 * 1000,
       })
       const assistantContent = extractChatContent(result)
@@ -1911,10 +1941,24 @@ export default function AiChatPage() {
         t
       )
       const introText = bundledSampleNotice ? `${bundledSampleNotice}\n\n` : ''
-      let displayText = `${introText}${assistantContent}`
+      const fallbackNotice =
+        result?.fallbackUsed && result.activeModel && result.requestedModel
+          ? t(
+              'Local chat used {{activeModel}} because {{requestedModel}} did not return a usable reply fast enough.',
+              {
+                activeModel: result.activeModel,
+                requestedModel: result.requestedModel,
+              }
+            )
+          : ''
+      let displayText = `${introText}${
+        fallbackNotice ? `${fallbackNotice}\n\n` : ''
+      }${assistantContent}`
 
       if (flipAnalysis) {
-        displayText = `${introText}${formatFlipAnalysisForDisplay(
+        displayText = `${introText}${
+          fallbackNotice ? `${fallbackNotice}\n\n` : ''
+        }${formatFlipAnalysisForDisplay(
           flipAnalysis,
           t
         )}\n\n${assistantContent}`

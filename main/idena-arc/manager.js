@@ -38,6 +38,14 @@ const FRAME_CONTEXT_PROTOCOL = 'idena-arc-compact-frame-context-v0'
 const TRAINING_EXAMPLE_PROTOCOL = 'idena-arc-training-example-v0'
 const TRAINING_DATASET_EXPORT_PROTOCOL = 'idena-arc-training-dataset-export-v0'
 const TEACHER_JOURNEY_PROTOCOL = 'idena-arc-teacher-journey-v1'
+const ARC_TEACHER_TASK_TYPES = [
+  'action_effect_prediction',
+  'hypothesis_update',
+  'world_model_compression',
+  'discriminating_probe_policy',
+  'misconception_detection',
+  'transfer_check',
+]
 const PRIVATE_SIGNING_FIELD_KEYS = new Set([
   'nodeKey',
   'nodeKeyHex',
@@ -444,10 +452,15 @@ function normalizeEvidenceEvents(value) {
 
 function normalizeRecognitionMoment(value, fallbackActionIndex = null) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const actionIndex =
+      typeof value.actionIndex !== 'undefined'
+        ? value.actionIndex
+        : value.action_index
+    const selectedActionIndex =
+      typeof actionIndex !== 'undefined' ? actionIndex : fallbackActionIndex
     return {
-      actionIndex: normalizeNullableInteger(
-        value.actionIndex || value.action_index || fallbackActionIndex
-      ),
+      protocol: 'idena-arc-recognition-moment-v1',
+      actionIndex: normalizeNullableInteger(selectedActionIndex),
       t_ms: normalizeNullableInteger(value.t_ms || value.tMs, {
         min: 0,
         max: Number.MAX_SAFE_INTEGER,
@@ -457,6 +470,7 @@ function normalizeRecognitionMoment(value, fallbackActionIndex = null) {
   }
 
   return {
+    protocol: 'idena-arc-recognition-moment-v1',
     actionIndex: normalizeNullableInteger(fallbackActionIndex),
     t_ms: null,
     description: boundedString(value, 1000),
@@ -845,6 +859,9 @@ function normalizeComparisonAnnotation(input = {}, context = {}) {
     actionButtonComparison: normalizeActionButtonComparison(
       input.actionButtonComparison || input.action_button_comparison || {}
     ),
+    failureModeAnnotations: normalizeFailureModeAnnotations(
+      input.failureModeAnnotations || input.failure_mode_annotations || []
+    ),
   }
 }
 
@@ -873,6 +890,34 @@ function normalizeJourneyActions(actions) {
         stateHash: boundedString(item.stateHash, 160) || null,
         reason: boundedString(item.reason || item.rationale, 1000),
         observation: boundedString(item.observation, 1000),
+        intendedTest: boundedString(item.intendedTest || item.intent, 1000),
+        expectedObservation: boundedString(
+          item.expectedObservation || item.expectedEffect,
+          1000
+        ),
+        observedEffect: boundedString(
+          item.observedEffect || item.observationAfter,
+          1000
+        ),
+        localEffect: boundedString(item.localEffect, 1000),
+        worldModelHypothesis: boundedString(
+          item.worldModelHypothesis || item.ruleHypothesis,
+          1000
+        ),
+        hypothesisStatus: ['new', 'kept', 'changed', 'rejected'].includes(
+          String(item.hypothesisStatus || '').trim()
+        )
+          ? String(item.hypothesisStatus).trim()
+          : '',
+        analogyRisk: ['low', 'medium', 'high'].includes(
+          String(item.analogyRisk || '').trim()
+        )
+          ? String(item.analogyRisk).trim()
+          : '',
+        nextDiscriminatingTest: boundedString(
+          item.nextDiscriminatingTest || item.nextTest,
+          1000
+        ),
       }
 
       if (typeof item.score === 'number' && Number.isFinite(item.score)) {
@@ -883,6 +928,9 @@ function normalizeJourneyActions(actions) {
         Number.isFinite(item.confidence)
       ) {
         next.confidence = Math.max(0, Math.min(1, item.confidence))
+      }
+      if (item.probeFallback) {
+        next.probeFallback = true
       }
 
       return next
@@ -967,6 +1015,9 @@ function normalizeTeacherRounds(rounds) {
         maxItems: 24,
         maxLength: 80,
       }),
+      failureModeAnnotations: normalizeFailureModeAnnotations(
+        round.failureModeAnnotations || []
+      ),
       compressedMemory: normalizeCompressedTeacherMemory(
         round.compressedMemory || {}
       ),
@@ -987,8 +1038,9 @@ function normalizeProviderAnnotationDrafts(drafts) {
         ? Math.max(0, draft.costUsd)
         : null,
     reviewedByHuman: Boolean(draft.reviewedByHuman),
-    excludedFromTraining:
-      draft.excludedFromTraining === false ? !draft.reviewedByHuman : true,
+    excludedFromTraining: Boolean(
+      draft.reviewedByHuman ? draft.excludedFromTraining : true
+    ),
     text: boundedString(draft.text || draft.content, 8000),
     provenanceHash:
       boundedString(draft.provenanceHash, 160) ||
@@ -996,6 +1048,145 @@ function normalizeProviderAnnotationDrafts(drafts) {
         `${draft.provider || ''}:${draft.model || ''}:${draft.text || ''}`
       ),
   }))
+}
+
+function normalizeFailureModeAnnotations(items) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, 16)
+    .map((item) => {
+      const id = boundedString(item.id || item.failureMode, 120)
+
+      if (!id) return null
+
+      return {
+        protocol: 'idena-arc-failure-mode-annotation-v1',
+        id,
+        label: boundedString(item.label || id, 120),
+        failureMode: boundedString(item.failureMode || id, 120),
+        createdAt: boundedString(item.createdAt, 80) || isoNow(),
+        failedAbstraction: boundedString(item.failedAbstraction, 1200),
+        humanCorrection: boundedString(
+          item.humanCorrection || item.correction,
+          1200
+        ),
+        capabilityTag: boundedString(item.capabilityTag, 120),
+        adapterTarget: boundedString(item.adapterTarget, 240),
+      }
+    })
+    .filter(Boolean)
+}
+
+function normalizeLevelTransferChecks(items) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, 8)
+    .map((item) => {
+      const whyItWorked = boundedString(
+        item.whyItWorked || item.why || item.explanation,
+        1600
+      )
+      const shouldTransfer = boundedString(
+        item.shouldTransfer || item.transferRule || item.transfer,
+        1600
+      )
+      const disconfirmingEvidence = boundedString(
+        item.disconfirmingEvidence || item.disconfirmingRule,
+        1600
+      )
+
+      if (!whyItWorked && !shouldTransfer && !disconfirmingEvidence) {
+        return null
+      }
+
+      return {
+        protocol: 'idena-arc-level-transfer-check-v1',
+        createdAt: boundedString(item.createdAt, 80) || isoNow(),
+        whyItWorked,
+        shouldTransfer,
+        disconfirmingEvidence,
+      }
+    })
+    .filter(Boolean)
+}
+
+function normalizeHypothesisTimeline(items) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, 256)
+    .map((item, index) => ({
+      protocol: 'idena-arc-hypothesis-event-v1',
+      attemptIndex: Number.isFinite(Number(item.attemptIndex))
+        ? Math.max(0, Math.trunc(Number(item.attemptIndex)))
+        : 0,
+      actionIndex: Number.isFinite(Number(item.actionIndex))
+        ? Math.max(0, Math.trunc(Number(item.actionIndex)))
+        : index,
+      action: boundedString(item.action, 80),
+      stateHash: boundedString(item.stateHash, 160) || null,
+      intendedTest: boundedString(item.intendedTest, 1000),
+      expectedObservation: boundedString(item.expectedObservation, 1000),
+      observedEffect: boundedString(item.observedEffect, 1000),
+      localEffect: boundedString(item.localEffect, 1000),
+      worldModelHypothesis: boundedString(item.worldModelHypothesis, 1000),
+      hypothesisStatus: ['new', 'kept', 'changed', 'rejected'].includes(
+        String(item.hypothesisStatus || '').trim()
+      )
+        ? String(item.hypothesisStatus).trim()
+        : '',
+      analogyRisk: ['low', 'medium', 'high'].includes(
+        String(item.analogyRisk || '').trim()
+      )
+        ? String(item.analogyRisk).trim()
+        : '',
+      nextDiscriminatingTest: boundedString(item.nextDiscriminatingTest, 1000),
+      confidence:
+        typeof item.confidence === 'number' && Number.isFinite(item.confidence)
+          ? Math.max(0, Math.min(1, item.confidence))
+          : null,
+    }))
+}
+
+function deriveHypothesisTimeline(localAiAttempts) {
+  return (Array.isArray(localAiAttempts) ? localAiAttempts : [])
+    .flatMap((attempt, attemptIndex) =>
+      (Array.isArray(attempt.actions) ? attempt.actions : []).map(
+        (action, actionIndex) => ({
+          attemptIndex,
+          actionIndex,
+          action: action.action,
+          stateHash: action.stateHash,
+          intendedTest: action.intendedTest || action.reason,
+          expectedObservation: action.expectedObservation,
+          observedEffect: action.observedEffect || action.observation,
+          localEffect: action.localEffect,
+          worldModelHypothesis: action.worldModelHypothesis,
+          hypothesisStatus: action.hypothesisStatus,
+          analogyRisk: action.analogyRisk,
+          nextDiscriminatingTest: action.nextDiscriminatingTest,
+          confidence: action.confidence,
+        })
+      )
+    )
+    .slice(0, 256)
+}
+
+function normalizeCompressionAudit(input = {}, fallback = {}) {
+  const source = input && typeof input === 'object' ? input : {}
+  return {
+    protocol: 'idena-arc-compression-audit-v1',
+    status: boundedString(source.status || fallback.status || 'draft', 120),
+    hasCompressedMemory: Boolean(
+      source.hasCompressedMemory || fallback.hasCompressedMemory
+    ),
+    hasRecognitionMoment: Boolean(
+      source.hasRecognitionMoment || fallback.hasRecognitionMoment
+    ),
+    failureModeCount: Number.isFinite(Number(source.failureModeCount))
+      ? Math.max(0, Math.trunc(Number(source.failureModeCount)))
+      : Number(fallback.failureModeCount || 0),
+    completionComprehensionReady: Boolean(
+      source.completionComprehensionReady ||
+        fallback.completionComprehensionReady
+    ),
+  }
 }
 
 function normalizeTeacherJourney(input = {}, context = {}) {
@@ -1015,6 +1206,26 @@ function normalizeTeacherJourney(input = {}, context = {}) {
   if (!humanAttempt && !localAiAttempts.length) {
     return null
   }
+  const failureModeAnnotations = normalizeFailureModeAnnotations(
+    input.failureModeAnnotations || []
+  )
+  const levelTransferChecks = normalizeLevelTransferChecks(
+    input.levelTransferChecks || []
+  )
+  const recognitionMoment = normalizeRecognitionMoment(input.recognitionMoment)
+  const compressedTeacherMemory = normalizeCompressedTeacherMemory(
+    input.compressedTeacherMemory || {}
+  )
+  const hypothesisTimeline = normalizeHypothesisTimeline(
+    input.hypothesisTimeline && input.hypothesisTimeline.length
+      ? input.hypothesisTimeline
+      : deriveHypothesisTimeline(localAiAttempts)
+  )
+  const hasRecognitionMoment = Boolean(
+    recognitionMoment &&
+      (Number.isInteger(recognitionMoment.actionIndex) ||
+        recognitionMoment.description)
+  )
 
   return {
     protocol: TEACHER_JOURNEY_PROTOCOL,
@@ -1043,9 +1254,26 @@ function normalizeTeacherJourney(input = {}, context = {}) {
     visualAnnotations: normalizeEvidenceEvents(
       input.visualAnnotations || input.visual_annotations
     ),
-    compressedTeacherMemory: normalizeCompressedTeacherMemory(
-      input.compressedTeacherMemory || {}
+    visualEvidenceMarks: normalizeEvidenceEvents(
+      input.visualEvidenceMarks ||
+        input.visual_evidence_marks ||
+        input.visualAnnotations ||
+        input.visual_annotations
     ),
+    recognitionMoment,
+    hypothesisTimeline,
+    failureModeAnnotations,
+    levelTransferChecks,
+    compressionAudit: normalizeCompressionAudit(input.compressionAudit, {
+      hasCompressedMemory: Boolean(compressedTeacherMemory),
+      hasRecognitionMoment,
+      failureModeCount: failureModeAnnotations.length,
+      completionComprehensionReady: levelTransferChecks.some(
+        (item) =>
+          item.whyItWorked && item.shouldTransfer && item.disconfirmingEvidence
+      ),
+    }),
+    compressedTeacherMemory,
   }
 }
 
@@ -1270,7 +1498,11 @@ function actionHintsFromText(...values) {
   return hints.slice(0, 16)
 }
 
-function buildAnnotationValidationRecord(annotationPayload = {}, bundle = {}) {
+function buildAnnotationValidationRecord(
+  annotationPayload = {},
+  bundle = {},
+  verificationContext = {}
+) {
   const trace = bundle.trace || {}
   const frameContext =
     annotationPayload.frameContext || buildCompactFrameContext(bundle)
@@ -1284,8 +1516,45 @@ function buildAnnotationValidationRecord(annotationPayload = {}, bundle = {}) {
   const localAi = annotationPayload.localAiGameplayAnnotation || {}
   const humanReplay = annotationPayload.humanReplayAnnotation || {}
   const humanRule = annotationPayload.humanRuleAnnotation || {}
+  const teacherJourney = annotationPayload.teacherJourney || {}
   const localStructured = localAi.structuredExplanation || {}
   const replayStructured = humanReplay.structuredExplanation || {}
+  const verifiedTraceCompleted = Boolean(
+    verificationContext.verifiedCompleted ||
+      (bundle.result && bundle.result.result === 'completed')
+  )
+  const completedAttemptPresent = Boolean(
+    verifiedTraceCompleted ||
+      (teacherJourney.humanAttempt && teacherJourney.humanAttempt.completed) ||
+      (Array.isArray(teacherJourney.localAiAttempts) &&
+        teacherJourney.localAiAttempts.some((attempt) => attempt.completed))
+  )
+  const teacherAttempts = [
+    teacherJourney.humanAttempt,
+    ...(Array.isArray(teacherJourney.localAiAttempts)
+      ? teacherJourney.localAiAttempts
+      : []),
+  ].filter(Boolean)
+  const teacherAttemptsReplayVerified = teacherAttempts.every(
+    (attempt) => attempt.replayVerified === true
+  )
+  const teacherAttemptHashesMatch = teacherAttempts.every(
+    (attempt) =>
+      attempt.replayActionCountMatches !== false &&
+      attempt.finalStateHashMatches !== false &&
+      attempt.actionStateHashesMatch !== false
+  )
+  const humanAttemptMatchesTrace = Boolean(
+    !teacherJourney.humanAttempt ||
+      teacherJourney.humanAttempt.traceActionHashMatches === true
+  )
+  const hasTransferCheck = Boolean(
+    Array.isArray(teacherJourney.levelTransferChecks) &&
+      teacherJourney.levelTransferChecks.some(
+        (item) =>
+          item.whyItWorked && item.shouldTransfer && item.disconfirmingEvidence
+      )
+  )
   const textFields = [
     localAi.explanationText,
     localAi.uncertaintyNotes,
@@ -1319,7 +1588,7 @@ function buildAnnotationValidationRecord(annotationPayload = {}, bundle = {}) {
     Number.isInteger(item && item.actionIndex)
   )
   const validEvidenceRefs = referencedEvidence.filter(
-    (item) => item.actionIndex >= 0 && item.actionIndex <= traceActions.length
+    (item) => item.actionIndex >= 0 && item.actionIndex < traceActions.length
   )
   const checks = [
     {
@@ -1352,6 +1621,22 @@ function buildAnnotationValidationRecord(annotationPayload = {}, bundle = {}) {
         predictedNextActions.length === 0 ||
         predictedNextActions.some((action) => traceActions.includes(action)),
     },
+    {
+      id: 'completion-comprehension-check',
+      passed: !completedAttemptPresent || hasTransferCheck,
+    },
+    {
+      id: 'teacher-attempts-replay-verified',
+      passed: teacherAttemptsReplayVerified,
+    },
+    {
+      id: 'teacher-attempt-state-hashes-match',
+      passed: teacherAttemptHashesMatch,
+    },
+    {
+      id: 'human-attempt-matches-trace',
+      passed: humanAttemptMatchesTrace,
+    },
   ]
   const passedChecks = checks.filter((check) => check.passed).length
   const readinessScore =
@@ -1373,14 +1658,44 @@ function buildAnnotationValidationRecord(annotationPayload = {}, bundle = {}) {
   if (!checks[4].passed) {
     feedback.push('Action hints in the explanation do not appear in the trace.')
   }
+  if (!checks[5].passed) {
+    feedback.push(
+      'Completed runs need why-it-worked, transfer, and disconfirming-evidence notes before high-quality training.'
+    )
+  }
+  if (!checks[6].passed) {
+    feedback.push('Teacher attempts must replay from the original seed.')
+  }
+  if (!checks[7].passed) {
+    feedback.push('Teacher attempt state hashes must match replayed states.')
+  }
+  if (!checks[8].passed) {
+    feedback.push('The saved human attempt must match the verified trace.')
+  }
+
+  const usableForHighQualityTraining =
+    readinessScore >= 0.8 &&
+    traceActions.length > 0 &&
+    checks[3].passed &&
+    (!completedAttemptPresent || hasTransferCheck) &&
+    teacherAttemptsReplayVerified &&
+    teacherAttemptHashesMatch &&
+    humanAttemptMatchesTrace
+
+  let qualityTier = 'draft'
+  if (usableForHighQualityTraining) {
+    qualityTier = 'high-quality'
+  } else if (completedAttemptPresent && !hasTransferCheck) {
+    qualityTier = 'needs-completion-comprehension'
+  }
 
   return {
     protocol: ANNOTATION_VALIDATION_PROTOCOL,
     strategy: 'deterministic-noemon-style-validator-v0',
-    status:
-      readinessScore >= 0.8 && traceActions.length > 0
-        ? 'usable-for-training'
-        : 'needs-more-annotation',
+    status: usableForHighQualityTraining
+      ? 'usable-for-training'
+      : 'needs-more-annotation',
+    qualityTier,
     readinessScore,
     checks,
     feedback,
@@ -1416,10 +1731,363 @@ function hasAnnotationTrainingSignal(annotationPayload) {
       humanReplay.explanationText ||
       (compressedTeacherMemory && compressedTeacherMemory.compressedText) ||
       (Array.isArray(teacherJourney.localAiAttempts) &&
-        teacherJourney.localAiAttempts.length) ||
+        teacherJourney.localAiAttempts.some(
+          (attempt) => attempt && attempt.replayVerified === true
+        )) ||
       hasNoemonStyleSignal(localAiGameplay.structuredExplanation) ||
       hasNoemonStyleSignal(humanReplay.structuredExplanation)
   )
+}
+
+function compactAttemptActionsForTask(attempt) {
+  return normalizeJourneyActions(attempt && attempt.actions).map((action) => ({
+    action: action.action,
+    arcAction: action.arcAction,
+    stateHash: action.stateHash,
+    intendedTest: action.intendedTest || action.reason || '',
+    expectedObservation: action.expectedObservation || '',
+    observedEffect: action.observedEffect || action.observation || '',
+    localEffect: action.localEffect || '',
+    worldModelHypothesis: action.worldModelHypothesis || '',
+    hypothesisStatus: action.hypothesisStatus || '',
+    analogyRisk: action.analogyRisk || '',
+    nextDiscriminatingTest: action.nextDiscriminatingTest || '',
+    probeFallback: Boolean(action.probeFallback),
+    confidence:
+      typeof action.confidence === 'number' ? action.confidence : null,
+  }))
+}
+
+function compactTrainingText(value, maxLength = 1600) {
+  return boundedString(value, maxLength)
+}
+
+function buildArcTeacherNegativeExamples({teacherJourney, comparison, human}) {
+  const localAiAttempts = Array.isArray(teacherJourney.localAiAttempts)
+    ? teacherJourney.localAiAttempts.filter(
+        (attempt) => attempt && attempt.replayVerified === true
+      )
+    : []
+  const localAiActions = localAiAttempts.flatMap((attempt) =>
+    compactAttemptActionsForTask(attempt)
+  )
+  const levelTransferChecks = Array.isArray(teacherJourney.levelTransferChecks)
+    ? teacherJourney.levelTransferChecks
+    : []
+  const failureModeAnnotations = [
+    ...(Array.isArray(teacherJourney.failureModeAnnotations)
+      ? teacherJourney.failureModeAnnotations
+      : []),
+    ...(Array.isArray(comparison.failureModeAnnotations)
+      ? comparison.failureModeAnnotations
+      : []),
+  ]
+  const records = []
+  const seen = new Set()
+  const pushRecord = (record) => {
+    if (!record || !record.kind) return
+    const key = `${record.kind}:${record.label || ''}:${record.evidence || ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    records.push({
+      protocol: 'idena-arc-negative-training-example-v1',
+      kind: compactTrainingText(record.kind, 120),
+      label: compactTrainingText(record.label || record.kind, 160),
+      evidence: compactTrainingText(record.evidence, 1600),
+      correction: compactTrainingText(record.correction, 1600),
+      action: compactTrainingText(record.action, 80),
+      source: compactTrainingText(record.source || 'teacher-journey', 120),
+    })
+  }
+
+  failureModeAnnotations.forEach((item) => {
+    pushRecord({
+      kind: item.failureMode || item.id || 'teacher-marked-failure',
+      label: item.label || item.failureMode || item.id,
+      evidence: item.failedAbstraction,
+      correction: item.humanCorrection,
+      source: 'teacher-failure-chip',
+    })
+  })
+  localAiActions
+    .filter((action) => action.analogyRisk && action.analogyRisk !== 'low')
+    .forEach((action) => {
+      pushRecord({
+        kind: 'wrong-analogy-risk',
+        label: action.analogyRisk,
+        action: action.action,
+        evidence: action.worldModelHypothesis || action.intendedTest,
+        correction:
+          action.nextDiscriminatingTest ||
+          'Treat the analogy as a hypothesis and test it against replay evidence.',
+        source: 'local-ai-action',
+      })
+    })
+  localAiAttempts.forEach((attempt) => {
+    const stopReason = String(attempt.stopReason || '')
+    if (/repeat|loop|stuck/i.test(stopReason)) {
+      pushRecord({
+        kind: 'repeated-state-loop',
+        label: stopReason,
+        evidence: `Local AI stopped with ${stopReason}.`,
+        correction:
+          'Switch to a discriminating probe when state hashes repeat.',
+        source: 'local-ai-stop-reason',
+      })
+    }
+    if (attempt.completed && !levelTransferChecks.length) {
+      pushRecord({
+        kind: 'accidental-win',
+        label: 'completed-without-transfer-check',
+        evidence: 'Attempt completed but has no level-transfer explanation.',
+        correction:
+          'Require why-it-worked, transfer, and disconfirming-evidence notes.',
+        source: 'completion-check',
+      })
+    }
+  })
+  ;(human.wrongHypotheses || []).forEach((hypothesis) => {
+    pushRecord({
+      kind: 'wrong-human-recorded-hypothesis',
+      label: 'wrong hypothesis',
+      evidence: hypothesis,
+      correction: comparison.humanVsAiGap || human.teachingNotes || '',
+      source: 'human-rule-annotation',
+    })
+  })
+
+  return records.slice(0, 32)
+}
+
+function buildArcTeacherPreferencePairs({
+  teacherJourney,
+  comparison,
+  human,
+  localAiGameplay,
+  humanReplay,
+  compressedTeacherMemory,
+}) {
+  const failureModeAnnotations = [
+    ...(Array.isArray(teacherJourney.failureModeAnnotations)
+      ? teacherJourney.failureModeAnnotations
+      : []),
+    ...(Array.isArray(comparison.failureModeAnnotations)
+      ? comparison.failureModeAnnotations
+      : []),
+  ]
+  const localAiAttempt =
+    Array.isArray(teacherJourney.localAiAttempts) &&
+    teacherJourney.localAiAttempts.length
+      ? teacherJourney.localAiAttempts
+          .filter((attempt) => attempt && attempt.replayVerified === true)
+          .slice(-1)[0]
+      : null
+  const localAiActions = compactAttemptActionsForTask(localAiAttempt)
+  const pairs = []
+  const pushPair = (pair) => {
+    const chosen = compactTrainingText(pair && pair.chosen, 2400)
+    const rejected = compactTrainingText(pair && pair.rejected, 2400)
+    if (!chosen || !rejected) return
+    pairs.push({
+      protocol: 'idena-arc-teacher-preference-pair-v1',
+      taskType: compactTrainingText(pair.taskType, 120),
+      rejected,
+      chosen,
+      reason: compactTrainingText(pair.reason, 1200),
+      source: compactTrainingText(pair.source || 'teacher-review', 120),
+    })
+  }
+
+  failureModeAnnotations.forEach((item) => {
+    pushPair({
+      taskType: 'misconception_detection',
+      rejected: item.failedAbstraction,
+      chosen: item.humanCorrection,
+      reason: item.label || item.failureMode || item.id,
+      source: 'teacher-failure-chip',
+    })
+  })
+  pushPair({
+    taskType: 'world_model_compression',
+    rejected:
+      localAiGameplay.explanationText ||
+      (localAiGameplay.compression &&
+        localAiGameplay.compression.compressedText) ||
+      '',
+    chosen:
+      (compressedTeacherMemory && compressedTeacherMemory.compressedText) ||
+      humanReplay.explanationText ||
+      human.teachingNotes ||
+      '',
+    reason: 'Prefer evidence-linked teacher memory over broad AI summary.',
+    source: 'teacher-compression',
+  })
+  pushPair({
+    taskType: 'discriminating_probe_policy',
+    rejected: localAiActions
+      .map(
+        (action) => `${action.action}: ${action.reason || action.intendedTest}`
+      )
+      .filter(Boolean)
+      .slice(-4)
+      .join('\n'),
+    chosen:
+      comparison.humanVsAiGap ||
+      human.teachingNotes ||
+      (humanReplay.corrections || []).join('\n'),
+    reason: 'Prefer human correction when AI probes did not isolate the rule.',
+    source: 'human-review',
+  })
+
+  return pairs.slice(0, 24)
+}
+
+function buildArcTeacherTrainingTasks({
+  annotationPayload,
+  annotationValidation,
+  frameContext,
+}) {
+  const teacherJourney = annotationPayload.teacherJourney || {}
+  const humanAttempt =
+    teacherJourney.humanAttempt &&
+    teacherJourney.humanAttempt.replayVerified === true &&
+    teacherJourney.humanAttempt.traceActionHashMatches !== false
+      ? teacherJourney.humanAttempt
+      : null
+  const localAiAttempt =
+    Array.isArray(teacherJourney.localAiAttempts) &&
+    teacherJourney.localAiAttempts.length
+      ? teacherJourney.localAiAttempts
+          .filter((attempt) => attempt && attempt.replayVerified === true)
+          .slice(-1)[0]
+      : null
+  const comparison = annotationPayload.comparisonAnnotation || {}
+  const human = annotationPayload.humanRuleAnnotation || {}
+  const compressedTeacherMemory =
+    annotationPayload.compressedTeacherMemory ||
+    teacherJourney.compressedTeacherMemory ||
+    null
+  const failureModeAnnotations =
+    teacherJourney.failureModeAnnotations ||
+    comparison.failureModeAnnotations ||
+    []
+  const levelTransferChecks = teacherJourney.levelTransferChecks || []
+  const localAiActions = compactAttemptActionsForTask(localAiAttempt)
+  const humanActions = compactAttemptActionsForTask(humanAttempt)
+  const source = {
+    annotationHash: annotationPayload.annotationHash || null,
+    traceHash: annotationPayload.traceHash || null,
+    gameId:
+      (teacherJourney.game && teacherJourney.game.gameId) ||
+      frameContext.gameId ||
+      '',
+  }
+
+  return ARC_TEACHER_TASK_TYPES.map((taskType) => {
+    switch (taskType) {
+      case 'action_effect_prediction':
+        return {
+          taskType,
+          source,
+          input: {frameContext, actions: localAiActions},
+          target: {
+            observedEffects: localAiActions.map((action) => ({
+              action: action.action,
+              expectedObservation: action.expectedObservation,
+              observedEffect: action.observedEffect,
+              localEffect: action.localEffect,
+            })),
+          },
+        }
+      case 'hypothesis_update':
+        return {
+          taskType,
+          source,
+          input: {hypothesisTimeline: teacherJourney.hypothesisTimeline || []},
+          target: {
+            updates: (teacherJourney.hypothesisTimeline || []).map((event) => ({
+              action: event.action,
+              worldModelHypothesis: event.worldModelHypothesis,
+              hypothesisStatus: event.hypothesisStatus,
+              observedEffect: event.observedEffect,
+            })),
+          },
+        }
+      case 'world_model_compression':
+        return {
+          taskType,
+          source,
+          input: {
+            humanActions,
+            localAiActions,
+            failureModeAnnotations,
+            visualEvidenceMarks: teacherJourney.visualEvidenceMarks || [],
+          },
+          target: {
+            compressedTeacherMemory,
+            confirmedRules: human.confirmedRules || [],
+            recognitionMoment:
+              teacherJourney.recognitionMoment ||
+              human.recognitionMoment ||
+              null,
+          },
+        }
+      case 'discriminating_probe_policy':
+        return {
+          taskType,
+          source,
+          input: {
+            uncertainActions: localAiActions.filter(
+              (action) =>
+                !action.confidence ||
+                action.confidence < 0.5 ||
+                action.probeFallback
+            ),
+          },
+          target: {
+            nextDiscriminatingTests: localAiActions
+              .map((action) => action.nextDiscriminatingTest)
+              .filter(Boolean),
+          },
+        }
+      case 'misconception_detection':
+        return {
+          taskType,
+          source,
+          input: {
+            localAiActions,
+            localAiStopReason: localAiAttempt && localAiAttempt.stopReason,
+            humanVsAiGap: comparison.humanVsAiGap || '',
+          },
+          target: {
+            failureModeAnnotations,
+            wrongHypotheses: human.wrongHypotheses || [],
+            humanCorrection:
+              comparison.humanVsAiGap || human.teachingNotes || '',
+          },
+        }
+      case 'transfer_check':
+        return {
+          taskType,
+          source,
+          input: {
+            completed:
+              Boolean(humanAttempt && humanAttempt.completed) ||
+              Boolean(localAiAttempt && localAiAttempt.completed),
+            recognitionMoment:
+              teacherJourney.recognitionMoment ||
+              human.recognitionMoment ||
+              null,
+          },
+          target: {
+            levelTransferChecks,
+            validationQualityTier: annotationValidation.qualityTier,
+          },
+        }
+      default:
+        return {taskType, source, input: {}, target: {}}
+    }
+  })
 }
 
 function buildTrainingExample(annotationPayload, annotationHash, bundle) {
@@ -1435,7 +2103,10 @@ function buildTrainingExample(annotationPayload, annotationHash, bundle) {
     null
   const reviewedProviderDrafts = (
     annotationPayload.providerAnnotationDrafts || []
-  ).filter((draft) => draft && draft.reviewedByHuman)
+  ).filter(
+    (draft) =>
+      draft && draft.reviewedByHuman && draft.excludedFromTraining !== true
+  )
   const trace = bundle.trace || {}
   const result = bundle.result || {}
   const capabilityTags = collectCapabilityTags(human, comparison)
@@ -1444,9 +2115,32 @@ function buildTrainingExample(annotationPayload, annotationHash, bundle) {
   const annotationValidation =
     annotationPayload.annotationValidation ||
     buildAnnotationValidationRecord(annotationPayload, bundle)
+  const trainingTasks = buildArcTeacherTrainingTasks({
+    annotationPayload: {
+      ...annotationPayload,
+      annotationHash,
+    },
+    annotationValidation,
+    frameContext,
+  })
+  const negativeExamples = buildArcTeacherNegativeExamples({
+    teacherJourney: teacherJourney || {},
+    comparison,
+    human,
+  })
+  const preferencePairs = buildArcTeacherPreferencePairs({
+    teacherJourney: teacherJourney || {},
+    comparison,
+    human,
+    localAiGameplay,
+    humanReplay,
+    compressedTeacherMemory,
+  })
 
   return {
     protocol: TRAINING_EXAMPLE_PROTOCOL,
+    taskType: 'arc_teacher_multi_task',
+    taskTypes: ARC_TEACHER_TASK_TYPES,
     source: 'idena-arc-local-annotation-v0',
     access: 'local-only-private-by-default',
     releasePolicy: 'private-by-default',
@@ -1470,6 +2164,7 @@ function buildTrainingExample(annotationPayload, annotationHash, bundle) {
         typeof annotationValidation.readinessScore === 'number'
           ? annotationValidation.readinessScore
           : null,
+      trainingQualityTier: annotationValidation.qualityTier || null,
     },
     input: {
       frameContext,
@@ -1555,7 +2250,10 @@ function buildTrainingExample(annotationPayload, annotationHash, bundle) {
       providerAnnotationDrafts: reviewedProviderDrafts,
       providerDraftPolicy:
         'Provider drafts are excluded unless reviewedByHuman=true.',
+      negativeExamples,
+      preferencePairs,
     },
+    trainingTasks,
   }
 }
 
@@ -4023,6 +4721,210 @@ function createIdenaArcManager({
     return bundle
   }
 
+  function normalizedActionSequenceHash(actions) {
+    return hashJsonPrefixed(
+      normalizeActions(actions).map((action) => {
+        const next = {action: action.action}
+        if (typeof action.x === 'number') next.x = action.x
+        if (typeof action.y === 'number') next.y = action.y
+        return next
+      })
+    )
+  }
+
+  function replayActionPoints(replay = {}) {
+    const timeline = Array.isArray(replay.timeline) ? replay.timeline : []
+
+    return timeline.filter(
+      (point) => point && (point.phase === 'action' || point.actionInput)
+    )
+  }
+
+  function verifiedActionStateHash({replay, actionPoints, index}) {
+    const point = actionPoints[index] || null
+    if (point && point.stateHash) return point.stateHash
+
+    const isLastAction =
+      Array.isArray(actionPoints) && index === actionPoints.length - 1
+    if (isLastAction && replay && replay.finalStateHash) {
+      return replay.finalStateHash
+    }
+
+    return null
+  }
+
+  function verifiedActionEffect({point, stateHash, previousStateHash}) {
+    const score =
+      point && typeof point.score === 'number' ? `score=${point.score}; ` : ''
+    const changed =
+      stateHash && previousStateHash && stateHash !== previousStateHash
+        ? 'state changed'
+        : 'no verified state-hash change'
+
+    return `${score}${changed}`
+  }
+
+  function enrichAttemptWithReplay({
+    attempt,
+    replay,
+    fallbackActor,
+    expectedTraceActions = null,
+  }) {
+    const actionPoints = replayActionPoints(replay)
+    const normalizedActions = normalizeJourneyActions(attempt.actions)
+    let previousStateHash =
+      replay && Array.isArray(replay.timeline) && replay.timeline[0]
+        ? replay.timeline[0].stateHash || null
+        : null
+    const replayActionCountMatches =
+      actionPoints.length === normalizedActions.length
+    let actionStateHashesMatch = replayActionCountMatches
+    const suppliedFinalStateHash = attempt.finalStateHash || null
+    const actions = normalizedActions.map((action, index) => {
+      const point = actionPoints[index] || null
+      const stateHash = verifiedActionStateHash({replay, actionPoints, index})
+      if (action.stateHash && stateHash && action.stateHash !== stateHash) {
+        actionStateHashesMatch = false
+      }
+      const observedEffect = verifiedActionEffect({
+        point,
+        stateHash,
+        previousStateHash,
+      })
+      const next = {
+        ...action,
+        stateHash,
+        observation: observedEffect,
+        observedEffect,
+        localEffect: observedEffect,
+      }
+      previousStateHash = stateHash || previousStateHash
+      return next
+    })
+    const traceActionHashMatches = expectedTraceActions
+      ? normalizedActionSequenceHash(actions) ===
+        normalizedActionSequenceHash(expectedTraceActions)
+      : null
+
+    return {
+      ...attempt,
+      actor: attempt.actor || fallbackActor,
+      actionCount: actions.length,
+      actions,
+      replayTimeline: Array.isArray(replay.timeline)
+        ? replay.timeline.slice(0, MAX_ACTIONS + 1)
+        : [],
+      finalState: replay.finalState || attempt.finalState || null,
+      finalStateHash: replay.finalStateHash || null,
+      completed: Boolean(replay.completed),
+      gameOver: Boolean(replay.finalState && replay.finalState.gameOver),
+      replayVerified: true,
+      replayActionCountMatches,
+      suppliedFinalStateHash,
+      finalStateHashMatches:
+        !suppliedFinalStateHash ||
+        suppliedFinalStateHash === replay.finalStateHash,
+      actionStateHashesMatch,
+      traceActionHashMatches,
+    }
+  }
+
+  async function verifyTeacherAttemptReplay({
+    session,
+    attempt,
+    fallbackActor,
+    expectedTraceActions = null,
+  }) {
+    if (!attempt) return null
+
+    const actions = normalizeActions(attempt.actions)
+
+    try {
+      const replay = await replayTrace(session, actions)
+      return enrichAttemptWithReplay({
+        attempt,
+        replay,
+        fallbackActor,
+        expectedTraceActions,
+      })
+    } catch (error) {
+      return {
+        ...attempt,
+        replayVerified: false,
+        replayError: boundedString(
+          error && error.message ? error.message : error,
+          1000
+        ),
+        replayActionCountMatches: false,
+        traceActionHashMatches: expectedTraceActions
+          ? normalizedActionSequenceHash(actions) ===
+            normalizedActionSequenceHash(expectedTraceActions)
+          : null,
+        finalStateHashMatches: false,
+        actionStateHashesMatch: false,
+      }
+    }
+  }
+
+  async function verifyTeacherJourneyReplays({
+    teacherJourney,
+    sessionId,
+    traceActions,
+  }) {
+    if (!teacherJourney) return null
+
+    const session = await readSession(sessionId)
+    const humanAttempt = await verifyTeacherAttemptReplay({
+      session,
+      attempt: teacherJourney.humanAttempt,
+      fallbackActor: 'human',
+      expectedTraceActions: traceActions,
+    })
+    const localAiAttempts = []
+
+    for (const attempt of Array.isArray(teacherJourney.localAiAttempts)
+      ? teacherJourney.localAiAttempts
+      : []) {
+      localAiAttempts.push(
+        await verifyTeacherAttemptReplay({
+          session,
+          attempt,
+          fallbackActor: 'local-ai',
+        })
+      )
+    }
+
+    const replayVerifiedAttempts = [humanAttempt, ...localAiAttempts].filter(
+      Boolean
+    )
+    const replayVerification = {
+      protocol: 'idena-arc-teacher-replay-verification-v1',
+      checkedAt: teacherJourney.updatedAt || teacherJourney.createdAt || '',
+      attemptCount: replayVerifiedAttempts.length,
+      replayVerified: replayVerifiedAttempts.every(
+        (attempt) => attempt.replayVerified === true
+      ),
+      stateHashesMatch: replayVerifiedAttempts.every(
+        (attempt) =>
+          attempt.replayActionCountMatches !== false &&
+          attempt.finalStateHashMatches !== false &&
+          attempt.actionStateHashesMatch !== false
+      ),
+      humanAttemptMatchesTrace:
+        !humanAttempt || humanAttempt.traceActionHashMatches === true,
+    }
+
+    return {
+      ...teacherJourney,
+      humanAttempt,
+      localAiAttempts,
+      hypothesisTimeline: normalizeHypothesisTimeline(
+        deriveHypothesisTimeline(localAiAttempts)
+      ),
+      replayVerification,
+    }
+  }
+
   async function buildAnnotationBundle(payload = {}) {
     const traceBundle = await loadTraceBundleForAnnotation(payload)
     const traceVerification = await verifyTraceBundle({bundle: traceBundle})
@@ -4067,10 +4969,15 @@ function createIdenaArcManager({
         localAiGameplayAnnotation.actionButtonDescriptions
       ),
     }
-    const teacherJourney = normalizeTeacherJourney(
+    const normalizedTeacherJourney = normalizeTeacherJourney(
       payload.teacherJourney || {},
       context
     )
+    const teacherJourney = await verifyTeacherJourneyReplays({
+      teacherJourney: normalizedTeacherJourney,
+      sessionId,
+      traceActions: Array.isArray(trace.actions) ? trace.actions : [],
+    })
     const compressedTeacherMemory = normalizeCompressedTeacherMemory(
       payload.compressedTeacherMemory ||
         (teacherJourney && teacherJourney.compressedTeacherMemory) ||
@@ -4110,7 +5017,13 @@ function createIdenaArcManager({
     }
     const annotationValidation = buildAnnotationValidationRecord(
       baseAnnotationPayload,
-      traceBundle
+      traceBundle,
+      {
+        verifiedCompleted: Boolean(
+          (traceVerification.replay && traceVerification.replay.completed) ||
+            result.result === 'completed'
+        ),
+      }
     )
     const annotationPayload = {
       ...baseAnnotationPayload,
@@ -4122,14 +5035,19 @@ function createIdenaArcManager({
       annotationPayload.recordingHash === traceBundle.recordingHash &&
       annotationPayload.agentLogHash === traceBundle.agentLogHash &&
       annotationPayload.finalSeedHash === result.finalSeedHash
+    const traceIdentityVerified = Boolean(
+      traceVerification.signatureValid || traceVerification.anchorValid
+    )
     const hasTrainingSignal = hasAnnotationTrainingSignal(annotationPayload)
     const acceptedForTraining =
       annotationStatus === 'final' &&
       traceVerification.traceMatches &&
       traceVerification.recordingMatches &&
       traceVerification.agentLogMatches &&
+      traceIdentityVerified &&
       traceHashesMatch &&
-      hasTrainingSignal
+      hasTrainingSignal &&
+      annotationValidation.status === 'usable-for-training'
     const trainingExample = acceptedForTraining
       ? buildTrainingExample(annotationPayload, annotationHash, traceBundle)
       : null
@@ -4145,6 +5063,7 @@ function createIdenaArcManager({
       traceReplayVerified: Boolean(traceVerification.traceMatches),
       recordingVerified: Boolean(traceVerification.recordingMatches),
       agentLogVerified: Boolean(traceVerification.agentLogMatches),
+      traceIdentityVerified,
       traceHashesMatch,
       hasTrainingSignal,
       privateByDefault: true,
@@ -4224,12 +5143,14 @@ function createIdenaArcManager({
         annotationHashMatches &&
         rebuilt.traceReplayVerified &&
         rebuilt.recordingVerified &&
-        rebuilt.agentLogVerified,
+        rebuilt.agentLogVerified &&
+        rebuilt.traceIdentityVerified,
       annotationHashMatches,
       acceptedForTraining: rebuilt.acceptedForTraining,
       traceReplayVerified: rebuilt.traceReplayVerified,
       recordingVerified: rebuilt.recordingVerified,
       agentLogVerified: rebuilt.agentLogVerified,
+      traceIdentityVerified: rebuilt.traceIdentityVerified,
       traceHashesMatch: rebuilt.traceHashesMatch,
       hasTrainingSignal: rebuilt.hasTrainingSignal,
       annotationHash: rebuilt.annotationHash,
@@ -4683,6 +5604,31 @@ function createIdenaArcManager({
       capabilityTags: Array.from(
         new Set(examples.flatMap((example) => example.capabilityTags || []))
       ).sort(),
+      taskTypeCounts: examples
+        .flatMap((example) =>
+          Array.isArray(example.trainingTasks) ? example.trainingTasks : []
+        )
+        .reduce((acc, task) => {
+          const taskType = task && task.taskType ? task.taskType : 'unknown'
+          acc[taskType] = (acc[taskType] || 0) + 1
+          return acc
+        }, {}),
+      negativeExampleCount: examples.reduce(
+        (sum, example) =>
+          sum +
+          (Array.isArray(example.target && example.target.negativeExamples)
+            ? example.target.negativeExamples.length
+            : 0),
+        0
+      ),
+      preferencePairCount: examples.reduce(
+        (sum, example) =>
+          sum +
+          (Array.isArray(example.target && example.target.preferencePairs)
+            ? example.target.preferencePairs.length
+            : 0),
+        0
+      ),
       examples,
     }
     const datasetHash = hashJsonPrefixed(dataset)

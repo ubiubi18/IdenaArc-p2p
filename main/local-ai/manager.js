@@ -5827,6 +5827,7 @@ function createLocalAiManager({
       timeoutMs: next.timeoutMs,
       responseFormat: next.responseFormat,
       generationOptions: next.generationOptions,
+      fallbackGenerationOptions: next.fallbackGenerationOptions,
       modelFallbacks: next.modelFallbacks,
       visionModelFallbacks: next.visionModelFallbacks,
     })
