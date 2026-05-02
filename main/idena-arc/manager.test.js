@@ -116,6 +116,7 @@ describe('idena-arc manager', () => {
       arc_action: 'ACTION4',
       game_id: created.sessionId,
     })
+    expect(submitted.bundle.recording.entries[1].data.action_input.id).toBe(4)
     expect(submitted.bundle.recording.jsonl.trim().split('\n')).toHaveLength(
       submitted.bundle.recording.entries.length
     )

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at_utc": "2026-05-02T22:40:42+00:00",
+  "generated_at_utc": "2026-05-02T22:46:24+00:00",
   "project": {
     "name": "idena-arc",
     "product_name": "IdenaArc",
@@ -12,8 +12,8 @@
   },
   "git": {
     "branch": "main",
-    "head": "3821099366972c27252e060a8d7b1b511b3031aa",
-    "head_short": "38210993",
+    "head": "4f95836223f3a80bf4358fb7b7237f5f2691f380",
+    "head_short": "4f958362",
     "remotes": {
       "origin": "https://github.com/ubiubi18/IdenaArc-p2p.git",
       "upstream": null
@@ -122,20 +122,28 @@
         "modified_utc": "2026-05-02T22:40:19+00:00"
       },
       {
+        "path": "docs/protocol/arc-agi-3-agents-compatibility-note.md",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 4840,
+        "modified_utc": "2026-05-02T22:45:46+00:00"
+      },
+      {
         "path": "docs/protocol/anti-shortcut-policy.md",
         "role": "documentation",
         "area": "docs",
         "notes": "Project and implementation docs",
-        "size_bytes": 3936,
-        "modified_utc": "2026-05-02T22:40:19+00:00"
+        "size_bytes": 4340,
+        "modified_utc": "2026-05-02T22:46:00+00:00"
       },
       {
         "path": "docs/protocol/hidden-rule-adapter-pipeline.md",
         "role": "documentation",
         "area": "docs",
         "notes": "Project and implementation docs",
-        "size_bytes": 10413,
-        "modified_utc": "2026-05-02T22:40:19+00:00"
+        "size_bytes": 11188,
+        "modified_utc": "2026-05-02T22:45:55+00:00"
       },
       {
         "path": "docs/deep-research-integration.md",
@@ -340,8 +348,8 @@
         "role": "tooling",
         "area": "ops",
         "notes": "Dataset import, audit, and run capture tools",
-        "size_bytes": 8865,
-        "modified_utc": "2026-05-02T22:40:37+00:00"
+        "size_bytes": 8953,
+        "modified_utc": "2026-05-02T22:46:05+00:00"
       }
     ],
     "tests": [

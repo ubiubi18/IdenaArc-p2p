@@ -103,6 +103,7 @@ def main() -> None:
             REPO_ROOT / "docs" / "flip-challenge-import.md",
             REPO_ROOT / "docs" / "flip-reasoning-paper-optimizations.md",
             REPO_ROOT / "docs" / "protocol" / "arc-agi-3-hrm-design-note.md",
+            REPO_ROOT / "docs" / "protocol" / "arc-agi-3-agents-compatibility-note.md",
             REPO_ROOT / "docs" / "protocol" / "anti-shortcut-policy.md",
             REPO_ROOT / "docs" / "protocol" / "hidden-rule-adapter-pipeline.md",
             REPO_ROOT / "docs" / "deep-research-integration.md",

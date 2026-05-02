@@ -61,6 +61,13 @@ mainly reflect scripted probing, public-fixture familiarity, or trace
 memorization. See
 [arc-agi-3-hrm-design-note.md](arc-agi-3-hrm-design-note.md).
 
+ARC-compatible agent recordings are allowed as post-session artifacts, but
+compatibility must not become a shortcut channel. The public ARC-AGI-3 agent
+harness is a useful playback and benchmark interface; its game-specific prompts
+and templates are not allowed live-session policy sources for hidden IdenaArc
+tasks. See
+[arc-agi-3-agents-compatibility-note.md](arc-agi-3-agents-compatibility-note.md).
+
 ## Federated Learning Boundary
 
 The federated path should reward conceptual transfer without leaking fresh

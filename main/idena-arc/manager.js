@@ -2422,6 +2422,18 @@ function arcActionName(action) {
   )
 }
 
+function arcActionId(action) {
+  const name = arcActionName(action)
+
+  if (name === 'RESET') {
+    return 0
+  }
+
+  const match = String(name || '').match(/^ACTION([1-7])$/)
+
+  return match ? Number.parseInt(match[1], 10) : null
+}
+
 function containsPrivateSigningField(value, depth = 0) {
   if (depth > 12 || value == null || typeof value !== 'object') {
     return false
@@ -2700,18 +2712,29 @@ function buildReplayRecording({session, trace, replay}) {
       : fallbackTimelineFromTrace(session, trace, replay)
   const entries = timeline.map((point, index) => {
     const state = point && point.state ? point.state : null
-    const actionInput =
-      point && point.actionInput
-        ? {
-            id: point.actionInput.id,
-            data: {
-              game_id: gameId,
-              ...(point.actionInput.data || {}),
-              arc_action: arcActionName(point.actionInput.data.action),
-            },
-            reasoning: point.actionInput.reasoning || null,
-          }
-        : null
+    const pointActionInput =
+      point && point.actionInput ? point.actionInput : null
+    const pointActionData =
+      pointActionInput && pointActionInput.data ? pointActionInput.data : {}
+    const actionName = pointActionInput
+      ? arcActionName(
+          pointActionData.action ||
+            pointActionData.arc_action ||
+            pointActionInput.id
+        )
+      : null
+    const actionId = arcActionId(actionName)
+    const actionInput = pointActionInput
+      ? {
+          id: actionId !== null ? actionId : pointActionInput.id,
+          data: {
+            game_id: gameId,
+            ...pointActionData,
+            arc_action: actionName,
+          },
+          reasoning: pointActionInput.reasoning || null,
+        }
+      : null
     let levelsCompleted = 0
     if (typeof (point && point.levelsCompleted) === 'number') {
       levelsCompleted = point.levelsCompleted

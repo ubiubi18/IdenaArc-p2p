@@ -107,6 +107,24 @@ metadata that permits redistribution.
 Public ARC-AGI fixtures are useful for testing human annotation UX, but they do
 not provide IdenaArc's decentralized hidden-seed property by themselves.
 
+## ARC-AGI-3 Agents Compatibility
+
+ARC Prize's `ARC-AGI-3-Agents` repository is useful as an artifact and harness
+compatibility target. IdenaArc should preserve ARC-style recording fields such
+as `levels_completed`, `win_levels`, `available_actions`, `action_input.id`,
+`action_input.data.arc_action`, and optional action reasoning.
+
+The compatibility boundary is intentionally narrow:
+
+- export replayable `.recording.jsonl` artifacts that ARC-style playback tools
+  can parse
+- keep canonical action ids where `RESET=0` and `ACTION1..ACTION7=1..7`
+- use their agent templates as public-fixture baselines only
+- do not import game-specific public prompts into hidden-rule live sessions
+
+See
+[arc-agi-3-agents-compatibility-note.md](arc-agi-3-agents-compatibility-note.md).
+
 ## ARC-AGI-3 / HRM Design Note
 
 ARC-AGI-3 is interactive, so IdenaArc should evaluate exploration, goal
