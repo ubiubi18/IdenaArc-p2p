@@ -16,6 +16,8 @@ prompts or public-fixture strategies into live hidden-rule sessions.
 
 - ARC Prize agent harness:
   <https://github.com/arcprize/ARC-AGI-3-Agents>
+- ARC Prize documentation source:
+  <https://github.com/arcprize/docs>
 - ARC-AGI-3 documentation:
   <https://three.arcprize.org/docs>
 - ARC-AGI toolkit:
@@ -38,6 +40,24 @@ The recent public contract details matter:
 - `ACTION7` is part of the public action surface
 - recordings use `data.action_input` as the replay action source
 - scorecards/tags are used to group multi-game runs
+
+The docs source adds these details that matter for IdenaArc:
+
+- games are turn-based 2D grids with maximum `64x64` dimensions
+- cell values are integers `0..15`
+- coordinates use top-left `(0,0)` and `ACTION6` data is `{x,y}` in `0..63`
+- one response can contain `1..N` frames if the environment advances internally
+- game ids are `<game_name>-<version>`; the base name is stable, version can
+  change
+- each returned frame carries the explicit available action list
+- `ACTION6` availability does not reveal active click coordinates
+- after `GAME_OVER`, the only valid action is `RESET`
+- local toolkit runs are recommended for high-volume development; online/API
+  runs are the path for hosted scorecards and shareable replays
+- online API runs are rate-limited, currently documented at `600` requests per
+  minute
+- official competition mode is stricter: API interaction only, one scorecard,
+  one `make` call per environment, and no in-flight scorecard reads
 
 ## What IdenaArc Should Include
 
@@ -75,6 +95,12 @@ Do not use a turn index as the replay action id. A turn index may make local
 logs readable, but it breaks the expected ARC playback contract where the id is
 converted back into a `GameAction`.
 
+The public REST schema describes `action_input.id` more loosely as a client or
+sequential action index. IdenaArc therefore must not rely on `id` alone as its
+durable protocol identity. The durable action identity in IdenaArc bundles is
+`data.action_input.data.arc_action`; the numeric `id` is normalized only to stay
+friendly to the current ARC agent-harness playback code.
+
 ## What IdenaArc Should Not Import
 
 Do not treat the provided template agents as policy sources for live IdenaArc
@@ -96,11 +122,18 @@ public ARC harness at artifact boundaries:
 - export ARC-compatible recording JSONL
 - keep `ACTION1` through `ACTION7` and `RESET` canonical
 - preserve available-action lists for each frame
+- preserve game-over/reset boundaries; do not train non-reset actions after
+  terminal states as valid attempts
+- keep `ACTION6` annotation based on actual before/after frame deltas because
+  active click regions are not exposed by `available_actions`
 - store reasoning separately from raw replay state when possible
 - keep max-action budgets explicit in filenames and result payloads
 - support local playback/import tests against stored recordings
 - tag evaluation runs by source: `human`, `local-ai`, `adapter-eval`,
   `playback`, or `public-fixture`
+- keep official online scorecards separate from IdenaArc's local replay proof,
+  because hosted scorecards are evaluation reports, not the canonical signed
+  trace
 
 This makes IdenaArc results inspectable by ARC-style tools without weakening the
 anti-shortcut design.
@@ -131,6 +164,11 @@ adapter distribution.
   ids.
 - Keep `python/idena_arc/arc_sidecar.py` emitting `availableActionIds`,
   `levelsCompleted`, `winLevels`, and `actionInput.reasoning` when present.
+- Keep `docs/protocol/idena-arc-trace-bundle.schema.json` aligned with the
+  current ARC frame fields so downstream validators can check the public
+  compatibility surface.
+- Keep ARC API credentials, base URLs, and scorecard mode transient; do not store
+  API keys in trace bundles.
 - Add compatibility tests whenever the ARC public harness changes its recording
   or `FrameData` shape.
 - Use the public harness as a regression suite for fixture runs, not as the

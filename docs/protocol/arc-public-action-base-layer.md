@@ -11,6 +11,13 @@ The important finding is that the public game action enum is small and stable:
 therefore annotate observed behavior from before/after state changes instead of
 assuming that an action label fully describes the rule.
 
+The public docs add two practical constraints for agents and trainers:
+
+- after `GAME_OVER`, only `RESET` is valid; non-reset actions in a terminal
+  state are API errors, not meaningful failed attempts
+- `available_actions` tells the agent which action channels are legal, but for
+  `ACTION6` it does not expose the active click coordinates
+
 ## Runtime Sources Checked
 
 - IdenaArc sidecar action aliases: `python/idena_arc/arc_sidecar.py`

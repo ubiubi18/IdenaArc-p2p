@@ -119,6 +119,7 @@ npm run audit:privacy
 - [Training example schema](docs/protocol/idena-arc-training-example.schema.json)
 - [Anti-shortcut policy](docs/protocol/anti-shortcut-policy.md)
 - [Hidden-rule adapter pipeline](docs/protocol/hidden-rule-adapter-pipeline.md)
+- [ARC public action base layer](docs/protocol/arc-public-action-base-layer.md)
 - [ARC-AGI-3 / HRM design note](docs/protocol/arc-agi-3-hrm-design-note.md)
 - [ARC-AGI-3 agents compatibility note](docs/protocol/arc-agi-3-agents-compatibility-note.md)
 - [Idena validation](https://docs.idena.io/docs/developer/validation)

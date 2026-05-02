@@ -138,22 +138,65 @@
             "game_id",
             "frame",
             "state",
+            "levels_completed",
+            "win_levels",
             "score",
             "action_input",
             "guid",
-            "full_reset"
+            "full_reset",
+            "available_actions"
           ],
           "properties": {
             "game_id": {"type": "string", "minLength": 1},
             "frame": {"type": "array"},
             "state": {"type": ["object", "string", "null"]},
+            "levels_completed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 254
+            },
+            "win_levels": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 254
+            },
             "score": {"type": ["integer", "number", "null"]},
             "action_input": {
               "type": ["object", "null"],
-              "additionalProperties": true
+              "additionalProperties": true,
+              "properties": {
+                "id": {"type": ["integer", "string", "null"]},
+                "data": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "game_id": {"type": "string"},
+                    "arc_action": {
+                      "enum": [
+                        "RESET",
+                        "ACTION1",
+                        "ACTION2",
+                        "ACTION3",
+                        "ACTION4",
+                        "ACTION5",
+                        "ACTION6",
+                        "ACTION7",
+                        null
+                      ]
+                    }
+                  }
+                },
+                "reasoning": {
+                  "type": ["object", "array", "string", "number", "boolean", "null"]
+                }
+              }
             },
             "guid": {"type": "string", "minLength": 1},
             "full_reset": {"type": "boolean"},
+            "available_actions": {
+              "type": "array",
+              "items": {"type": "integer", "minimum": 1, "maximum": 7}
+            },
             "state_hash": {"type": ["string", "null"]}
           }
         }

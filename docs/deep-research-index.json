@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at_utc": "2026-05-02T22:46:24+00:00",
+  "generated_at_utc": "2026-05-02T22:50:09+00:00",
   "project": {
     "name": "idena-arc",
     "product_name": "IdenaArc",
@@ -12,8 +12,8 @@
   },
   "git": {
     "branch": "main",
-    "head": "4f95836223f3a80bf4358fb7b7237f5f2691f380",
-    "head_short": "4f958362",
+    "head": "2f96326a8bb88bfb45fbc135c0918e47b2e84671",
+    "head_short": "2f96326a",
     "remotes": {
       "origin": "https://github.com/ubiubi18/IdenaArc-p2p.git",
       "upstream": null
@@ -126,8 +126,24 @@
         "role": "documentation",
         "area": "docs",
         "notes": "Project and implementation docs",
-        "size_bytes": 4840,
-        "modified_utc": "2026-05-02T22:45:46+00:00"
+        "size_bytes": 6950,
+        "modified_utc": "2026-05-02T22:49:46+00:00"
+      },
+      {
+        "path": "docs/protocol/arc-public-action-base-layer.md",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 13563,
+        "modified_utc": "2026-05-02T22:49:51+00:00"
+      },
+      {
+        "path": "docs/protocol/idena-arc-trace-bundle.schema.json",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 9142,
+        "modified_utc": "2026-05-02T22:49:32+00:00"
       },
       {
         "path": "docs/protocol/anti-shortcut-policy.md",
@@ -348,8 +364,8 @@
         "role": "tooling",
         "area": "ops",
         "notes": "Dataset import, audit, and run capture tools",
-        "size_bytes": 8953,
-        "modified_utc": "2026-05-02T22:46:05+00:00"
+        "size_bytes": 9118,
+        "modified_utc": "2026-05-02T22:49:56+00:00"
       }
     ],
     "tests": [
