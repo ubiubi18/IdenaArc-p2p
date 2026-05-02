@@ -30,6 +30,10 @@
         "arc-trace-bundle",
         "arc-annotation-bundle",
         "arc-training-dataset",
+        "arc-game-design-draft",
+        "arc-game-ingredient-commitment",
+        "arc-game-ingredient",
+        "arc-game-constitution",
         "local-ai-update-bundle",
         "round-manifest"
       ]

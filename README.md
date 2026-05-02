@@ -24,6 +24,8 @@ identities that cannot be reset.
 - tx/IPFS proof-anchor draft mode; no renderer private-key input
 - local trace bundle storage under Electron user data `idena-arc/`
 - local hidden-rule annotations and local-only training-example exports
+- AI-assisted game-design drafts that compile natural language into
+  deterministic, human-signed rule ingredients
 - optional explicit `ipfs_add` upload only
 
 ## Trace Artifacts
@@ -119,6 +121,11 @@ npm run audit:privacy
 - [Training example schema](docs/protocol/idena-arc-training-example.schema.json)
 - [Anti-shortcut policy](docs/protocol/anti-shortcut-policy.md)
 - [Hidden-rule adapter pipeline](docs/protocol/hidden-rule-adapter-pipeline.md)
+- [AI-assisted P2P game design](docs/protocol/ai-assisted-game-design.md)
+- [Game design draft schema](docs/protocol/idena-arc-design-draft.schema.json)
+- [Game ingredient commitment schema](docs/protocol/idena-arc-ingredient-commitment.schema.json)
+- [Game ingredient schema](docs/protocol/idena-arc-game-ingredient.schema.json)
+- [Game constitution schema](docs/protocol/idena-arc-game-constitution.schema.json)
 - [ARC public action base layer](docs/protocol/arc-public-action-base-layer.md)
 - [ARC-AGI-3 / HRM design note](docs/protocol/arc-agi-3-hrm-design-note.md)
 - [ARC-AGI-3 agents compatibility note](docs/protocol/arc-agi-3-agents-compatibility-note.md)

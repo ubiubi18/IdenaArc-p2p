@@ -426,11 +426,24 @@ const ARC_SALT_INSERTION_CANDIDATES = [
 ]
 const ACTION_LAB_RULE_EDITOR_STEPS = [
   'Choose an existing input channel.',
+  'Describe the desired rule in natural language.',
+  'Compile it into deterministic rule cards.',
+  'Declare non-blocking public metadata.',
   'Pick a trigger and visible feedback.',
   'Add deterministic preconditions.',
   'Mark salted constants.',
   'Run human and local AI playtests.',
   'Export a signed rule proposal.',
+]
+const DEFAULT_GAME_DESIGN_REQUEST =
+  'Create a non-blocking shortcut overlay for a generator-owned room. It should prefer north/east ports. After the shortcut is used, one hidden object role changes from key to hazard, and the player gets a visible warning before the next action.'
+const NON_BLOCKING_INGREDIENT_PUBLIC_FIELDS = [
+  'template family',
+  'ports',
+  'size class',
+  'min/max actions',
+  'capability tags',
+  'fallback policy',
 ]
 const OPENAI_TEXT_PRICING_USD_PER_MTOK = {
   // Snapshot used for transparent estimates; platform billing remains authoritative.
@@ -843,6 +856,61 @@ function buildActionAnnotationPrompt(actionSet) {
   ].join('\n')
 }
 
+function buildGameDesignCompilerPrompt({actionSet, request}) {
+  const actions = actionSet && actionSet.actions ? actionSet.actions : []
+  const gameFamily =
+    actionSet && actionSet.gameId ? actionSet.gameId : 'unknown'
+
+  return [
+    'You are an IdenaArc game-design compiler assistant.',
+    'The human describes a desired game rule. Convert it into deterministic rule cards only.',
+    'Do not invent peer code, network calls, hidden model calls, unbounded randomness, or runtime AI behavior.',
+    `Game family: ${gameFamily}.`,
+    `Allowed base actions: ${actions.join(', ') || 'ACTION1..ACTION7'}.`,
+    `Salt slot candidates: ${ARC_SALT_INSERTION_CANDIDATES.join(', ')}.`,
+    '',
+    'Return exactly one JSON object with this shape:',
+    '{',
+    '  "protocol": "idena-arc-design-draft-v0",',
+    '  "version": 0,',
+    '  "createdAt": "<ISO-8601 timestamp>",',
+    '  "authorAddress": null,',
+    '  "privacy": "private-local-draft",',
+    '  "aiCompiler": {"role": "compiler-assistant-only", "providerPolicy": "any-private-provider", "provider": null, "model": null, "promptHash": null, "rawOutputHash": null},',
+    '  "naturalLanguageRequest": "<copy the human request>",',
+    `  "target": {"baseActionSet": ${JSON.stringify(
+      actions
+    )}, "gameFamily": ${JSON.stringify(
+      gameFamily
+    )}, "gridLimit": {"maxWidth": 64, "maxHeight": 64}},`,
+    '  "compiledDraft": {',
+    '    "dslVersion": "idena-arc-rule-dsl-v0",',
+    '    "ingredientKind": "action|path|template_overlay|path_dependent_action|object_role|scoring|salt_slot|mixed",',
+    '    "cards": [',
+    '      {',
+    '        "kind": "action|path|template_overlay|path_dependent_action|object_role|scoring|salt_slot",',
+    '        "title": "short label",',
+    '        "intent": "what the human wanted",',
+    '        "trigger": {"action": "ACTION1|ACTION2|ACTION3|ACTION4|ACTION5|ACTION6|ACTION7|RESET"},',
+    '        "preconditions": [],',
+    '        "effects": [],',
+    '        "observableFeedback": "what the player can see",',
+    '        "saltSlotRefs": []',
+    '      }',
+    '    ],',
+    '    "saltSlots": [],',
+    '    "templateOverlayContract": {"templateFamily": "generator_catalog_room", "width": 8, "height": 8, "entryPorts": ["north"], "exitPorts": ["east"], "minSolutionActions": 3, "maxSolutionActions": 16, "requiredCapabilities": [], "conflictTags": [], "requiredAtT0": false, "missingPayloadPolicy": "generator_catalog_fill"}',
+    '  },',
+    '  "compilerChecks": {"deterministicOnly": true, "noPeerCode": true, "readyForSigning": false, "warnings": [], "errors": []}',
+    '}',
+    '',
+    'If the request cannot be compiled safely, set readyForSigning to false and explain the errors.',
+    '',
+    'Human request:',
+    String(request || '').trim(),
+  ].join('\n')
+}
+
 function buildActionBaseLayerDraft({actor, actions, actionSet}) {
   return normalizeAttemptActions(actions).map((item, index) => {
     const action = arcActionName(item.arcAction || item.action) || item.action
@@ -878,6 +946,284 @@ function buildActionBaseLayerDraft({actor, actions, actionSet}) {
       confidence: 'low',
     }
   })
+}
+
+function detectIngredientKind(request) {
+  const text = String(request || '').toLowerCase()
+
+  if (/\b(sector|room|chunk|tile|module|piece|fragment|overlay)\b/.test(text)) {
+    return 'template_overlay'
+  }
+
+  if (
+    /\b(path|route|shortcut|branch|corridor|loop|gate|bridge|lane)\b/.test(
+      text
+    ) &&
+    /\b(after|before|when|until|visited|sequence|previous|mode)\b/.test(text)
+  ) {
+    return 'path_dependent_action'
+  }
+
+  if (
+    /\b(path|route|shortcut|branch|corridor|loop|gate|bridge|lane)\b/.test(text)
+  ) {
+    return 'path'
+  }
+
+  if (/\b(score|win|lose|fail|budget|cost|reward|complete)\b/.test(text)) {
+    return 'scoring'
+  }
+
+  if (/\b(role|key|hazard|switch|lock|goal|decoy|color|object)\b/.test(text)) {
+    return 'object_role'
+  }
+
+  return 'action'
+}
+
+function detectTemplatePorts(request) {
+  const text = String(request || '').toLowerCase()
+  const ports = []
+
+  if (/\b(north|up|top)\b/.test(text)) ports.push('north')
+  if (/\b(east|right)\b/.test(text)) ports.push('east')
+  if (/\b(south|down|bottom)\b/.test(text)) ports.push('south')
+  if (/\b(west|left)\b/.test(text)) ports.push('west')
+  if (/\b(start|spawn|entry)\b/.test(text)) ports.push('start')
+  if (/\b(goal|exit|finish)\b/.test(text)) ports.push('goal')
+
+  return Array.from(new Set(ports))
+}
+
+function detectTemplateCapabilities(request) {
+  const text = String(request || '').toLowerCase()
+  const capabilities = []
+
+  if (/\b(path|route|shortcut|branch|loop)\b/.test(text)) {
+    capabilities.push('spatial-planning')
+  }
+  if (/\b(key|lock|gate|permission)\b/.test(text)) {
+    capabilities.push('gated-progression')
+  }
+  if (/\b(hazard|risk|trap|fail)\b/.test(text)) {
+    capabilities.push('hazard-recognition')
+  }
+  if (/\b(after|before|when|until|later|next)\b/.test(text)) {
+    capabilities.push('path-dependent-rule')
+  }
+  if (/\b(role|color|object)\b/.test(text)) {
+    capabilities.push('object-role-inference')
+  }
+
+  return capabilities.length ? capabilities : ['hidden-rule-discovery']
+}
+
+function buildTemplateOverlayContract(request) {
+  const ports = detectTemplatePorts(request)
+  const entryPorts = ports.filter((port) =>
+    ['north', 'west', 'start'].includes(port)
+  )
+  const exitPorts = ports.filter((port) =>
+    ['east', 'south', 'goal'].includes(port)
+  )
+  const hasShortcut = /\b(shortcut|fast|speed)\b/i.test(request)
+  const hasHazard = /\b(hazard|risk|trap|fail)\b/i.test(request)
+
+  return {
+    templateFamily: 'generator_catalog_room',
+    width: 8,
+    height: 8,
+    entryPorts: entryPorts.length ? entryPorts : ['north'],
+    exitPorts: exitPorts.length ? exitPorts : ['east'],
+    minSolutionActions: hasShortcut ? 2 : 4,
+    maxSolutionActions: hasHazard ? 18 : 14,
+    requiredCapabilities: detectTemplateCapabilities(request),
+    conflictTags: hasHazard ? ['contains-hidden-hazard'] : [],
+    requiredAtT0: false,
+    missingPayloadPolicy: 'generator_catalog_fill',
+  }
+}
+
+function detectDesignAction(request, actionSet) {
+  const text = String(request || '').toLowerCase()
+  const actions =
+    actionSet && Array.isArray(actionSet.actions) ? actionSet.actions : []
+  const fallback = actions.includes('ACTION5')
+    ? 'ACTION5'
+    : actions[0] || 'ACTION5'
+
+  if (
+    /\b(click|tap|cell|coordinate|target)\b/.test(text) &&
+    actions.includes('ACTION6')
+  ) {
+    return 'ACTION6'
+  }
+
+  if (/\b(undo|rewind|back)\b/.test(text) && actions.includes('ACTION7')) {
+    return 'ACTION7'
+  }
+
+  if (/\b(up|north)\b/.test(text) && actions.includes('ACTION1'))
+    return 'ACTION1'
+  if (/\b(down|south)\b/.test(text) && actions.includes('ACTION2'))
+    return 'ACTION2'
+  if (/\b(left|west)\b/.test(text) && actions.includes('ACTION3'))
+    return 'ACTION3'
+  if (/\b(right|east)\b/.test(text) && actions.includes('ACTION4'))
+    return 'ACTION4'
+
+  return fallback
+}
+
+function detectSaltSlots(request) {
+  const text = String(request || '').toLowerCase()
+  const slots = []
+
+  if (/\b(role|key|hazard|switch|lock|goal|decoy|color|object)\b/.test(text)) {
+    slots.push({
+      name: 'saltedObjectRole',
+      type: 'object_role',
+      purpose:
+        'Resolve which visible object role receives the hidden behavior only at constitution time.',
+    })
+  }
+
+  if (
+    /\b(after|before|when|until|requires|gate|lock|permission)\b/.test(text)
+  ) {
+    slots.push({
+      name: 'saltedPermissionGate',
+      type: 'permission_gate',
+      purpose:
+        'Resolve the hidden precondition that enables or blocks this behavior.',
+    })
+  }
+
+  if (/\b(delay|later|next|turn|trigger)\b/.test(text)) {
+    slots.push({
+      name: 'saltedDelayedEffect',
+      type: 'delayed_effect',
+      purpose:
+        'Resolve whether the effect appears immediately or after a deterministic later trigger.',
+    })
+  }
+
+  if (/\b(speed|slow|cost|budget|cooldown|energy)\b/.test(text)) {
+    slots.push({
+      name: 'saltedBudgetRule',
+      type: 'budget_rule',
+      purpose:
+        'Resolve deterministic action cost or speed impact during constitution.',
+    })
+  }
+
+  return slots.length
+    ? slots
+    : [
+        {
+          name: 'saltedActionRemap',
+          type: 'action_remap',
+          purpose:
+            'Resolve one hidden action semantic from participant salts at constitution time.',
+        },
+      ]
+}
+
+function buildGameDesignDraft({actionSet, request}) {
+  const naturalLanguageRequest = String(request || '').trim()
+  const ingredientKind = detectIngredientKind(naturalLanguageRequest)
+  const action = detectDesignAction(naturalLanguageRequest, actionSet)
+  const saltSlots = detectSaltSlots(naturalLanguageRequest)
+  const saltSlotRefs = saltSlots.map((slot) => slot.name)
+  const intent =
+    naturalLanguageRequest ||
+    'Draft a deterministic IdenaArc game ingredient from a human rule request.'
+  const cardKind =
+    ingredientKind === 'mixed' ? 'path_dependent_action' : ingredientKind
+  let effectType = 'modify_action_effect'
+  const templateOverlayContract = buildTemplateOverlayContract(
+    naturalLanguageRequest
+  )
+
+  if (cardKind === 'template_overlay') {
+    effectType = 'bias_generator_template'
+  } else if (cardKind === 'path') {
+    effectType = 'modify_path'
+  } else if (cardKind === 'scoring') {
+    effectType = 'modify_score_rule'
+  }
+
+  const payload = {
+    protocol: 'idena-arc-design-draft-v0',
+    version: 0,
+    createdAt: new Date().toISOString(),
+    authorAddress: null,
+    privacy: 'private-local-draft',
+    aiCompiler: {
+      role: 'compiler-assistant-only',
+      providerPolicy: 'any-private-provider',
+      provider: null,
+      model: null,
+      promptHash: null,
+      rawOutputHash: null,
+    },
+    naturalLanguageRequest: intent,
+    target: {
+      baseActionSet:
+        actionSet && Array.isArray(actionSet.actions) ? actionSet.actions : [],
+      gameFamily: actionSet && actionSet.gameId ? actionSet.gameId : 'unknown',
+      gridLimit: {maxWidth: 64, maxHeight: 64},
+    },
+    compiledDraft: {
+      dslVersion: 'idena-arc-rule-dsl-v0',
+      ingredientKind,
+      cards: [
+        {
+          kind: cardKind,
+          title:
+            cardKind === 'template_overlay'
+              ? 'Human-authored non-blocking overlay'
+              : 'Human-authored rule ingredient',
+          intent,
+          trigger: {action, source: 'human-language-request'},
+          preconditions: [
+            {
+              type: 'session_constitution',
+              value: 'salt-slots-resolved',
+            },
+          ],
+          effects: [
+            {
+              type: effectType,
+              value: 'requires deterministic editor review',
+            },
+          ],
+          observableFeedback:
+            'Must show a visible state change, warning, or no-op signal that a human can learn from gameplay.',
+          saltSlotRefs,
+        },
+      ],
+      saltSlots,
+      ...(cardKind === 'template_overlay' ? {templateOverlayContract} : {}),
+    },
+    compilerChecks: {
+      deterministicOnly: true,
+      noPeerCode: true,
+      readyForSigning: false,
+      warnings: [
+        'Local skeleton only. A verifier must still check solvability, bounded action budget, and replay determinism.',
+        'AI/provider output is private drafting evidence and is not consensus-critical.',
+        ...(cardKind === 'template_overlay'
+          ? [
+              'This overlay must not be required at T0. Missing payloads are filled from the canonical generator catalog.',
+            ]
+          : []),
+      ],
+      errors: [],
+    },
+  }
+
+  return payload
 }
 
 function buildActionLabDraft({actionSet, humanActions, localAiAttempts}) {
@@ -4123,7 +4469,12 @@ function ActionLabPanel({
   localAiAttempts,
 }) {
   const [draftText, setDraftText] = React.useState('')
+  const [designRequest, setDesignRequest] = React.useState(
+    DEFAULT_GAME_DESIGN_REQUEST
+  )
+  const [designDraftText, setDesignDraftText] = React.useState('')
   const [copied, setCopied] = React.useState(false)
+  const [compilerCopied, setCompilerCopied] = React.useState(false)
   const actionSet = React.useMemo(
     () => currentArcActionSet({game, selectedArcAgiGame}),
     [game, selectedArcAgiGame]
@@ -4135,6 +4486,14 @@ function ActionLabPanel({
   const promptText = React.useMemo(
     () => buildActionAnnotationPrompt(actionSet),
     [actionSet]
+  )
+  const compilerPromptText = React.useMemo(
+    () =>
+      buildGameDesignCompilerPrompt({
+        actionSet,
+        request: designRequest,
+      }),
+    [actionSet, designRequest]
   )
   const latestAiAttempt = latestAttempt(localAiAttempts)
   const hasObservedActions = Boolean(
@@ -4153,6 +4512,14 @@ function ActionLabPanel({
     setDraftText(JSON.stringify(draft, null, 2))
   }, [actionSet, actionTimeline, localAiAttempts])
 
+  const handleBuildDesignDraft = React.useCallback(() => {
+    const draft = buildGameDesignDraft({
+      actionSet,
+      request: designRequest,
+    })
+    setDesignDraftText(JSON.stringify(draft, null, 2))
+  }, [actionSet, designRequest])
+
   const handleCopyPrompt = React.useCallback(async () => {
     setCopied(false)
     if (
@@ -4164,6 +4531,18 @@ function ActionLabPanel({
       setCopied(true)
     }
   }, [promptText])
+
+  const handleCopyCompilerPrompt = React.useCallback(async () => {
+    setCompilerCopied(false)
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === 'function'
+    ) {
+      await navigator.clipboard.writeText(compilerPromptText)
+      setCompilerCopied(true)
+    }
+  }, [compilerPromptText])
 
   return (
     <FoldoutPanel
@@ -4260,6 +4639,55 @@ function ActionLabPanel({
           </Stack>
 
           <Stack spacing={4}>
+            <Box borderWidth="1px" borderRadius="md" p={4} bg="blue.50">
+              <HStack spacing={2} mb={3} flexWrap="wrap">
+                <Badge colorScheme="blue">AI compiler</Badge>
+                <Text fontSize="sm" color="brandGray.500">
+                  private drafting, deterministic output
+                </Text>
+              </HStack>
+              <Field label="Natural-language game ingredient">
+                <Textarea
+                  value={designRequest}
+                  onChange={(event) => {
+                    setDesignRequest(event.target.value)
+                    setCompilerCopied(false)
+                  }}
+                  minH="120px"
+                  fontSize="sm"
+                  placeholder="Describe a rule, path, shortcut, hazard, action effect, or salt slot."
+                />
+                <FormHelperText>
+                  Use any private AI provider as a compiler assistant. The
+                  publishable object is still deterministic JSON signed by a
+                  human.
+                </FormHelperText>
+              </Field>
+              <HStack spacing={2} mt={3} flexWrap="wrap">
+                <SecondaryButton
+                  isDisabled={!String(designRequest || '').trim()}
+                  onClick={handleCopyCompilerPrompt}
+                >
+                  {compilerCopied
+                    ? 'Compiler prompt copied'
+                    : 'Copy compiler prompt'}
+                </SecondaryButton>
+                <PrimaryButton
+                  isDisabled={!String(designRequest || '').trim()}
+                  onClick={handleBuildDesignDraft}
+                >
+                  Compile skeleton
+                </PrimaryButton>
+              </HStack>
+              <HStack spacing={1} mt={3} flexWrap="wrap">
+                {NON_BLOCKING_INGREDIENT_PUBLIC_FIELDS.map((field) => (
+                  <Code key={field} fontSize="xs">
+                    {field}
+                  </Code>
+                ))}
+              </HStack>
+            </Box>
+
             <Field label="Local AI action annotation prompt">
               <Textarea
                 value={promptText}
@@ -4310,6 +4738,23 @@ function ActionLabPanel({
             </Box>
           </Stack>
         </SimpleGrid>
+
+        {designDraftText ? (
+          <Field label="Game ingredient draft">
+            <Textarea
+              value={designDraftText}
+              onChange={(event) => setDesignDraftText(event.target.value)}
+              minH="320px"
+              fontFamily="mono"
+              fontSize="xs"
+            />
+            <FormHelperText>
+              Private `idena-arc-design-draft-v0` skeleton. It is not
+              publishable until verifier checks produce a signed
+              `idena-arc-game-ingredient-v0`.
+            </FormHelperText>
+          </Field>
+        ) : null}
 
         {draftText ? (
           <Field label="Action annotation draft">

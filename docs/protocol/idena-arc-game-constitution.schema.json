@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena-arc.local/protocol/idena-arc-game-constitution.schema.json",
+  "title": "IdenaArc Game Constitution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "version",
+    "sessionId",
+    "createdAt",
+    "dslVersion",
+    "assembler",
+    "canonicalGenerator",
+    "finalSeedHash",
+    "ingredientSetHash",
+    "selectedIngredients",
+    "assemblyPlan",
+    "saltReveals",
+    "verifierProof",
+    "publication",
+    "constitutionHash"
+  ],
+  "properties": {
+    "protocol": {"const": "idena-arc-game-constitution-v0"},
+    "version": {"const": 0},
+    "sessionId": {"type": "string", "minLength": 1, "maxLength": 160},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "dslVersion": {"const": "idena-arc-rule-dsl-v0"},
+    "assembler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "deterministic"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 120},
+        "version": {"type": "string", "minLength": 1, "maxLength": 80},
+        "deterministic": {"const": true},
+        "hash": {"$ref": "#/$defs/sha256PrefixedOrNull"}
+      }
+    },
+    "canonicalGenerator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cid", "hash", "version", "completeWithoutPeerPayloads"],
+      "properties": {
+        "cid": {"type": "string", "minLength": 1, "maxLength": 240},
+        "hash": {"$ref": "#/$defs/sha256Prefixed"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 80},
+        "completeWithoutPeerPayloads": {"const": true}
+      }
+    },
+    "finalSeedHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "ingredientSetHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "selectedIngredients": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slotId",
+          "commitmentHash",
+          "producerAddress",
+          "availabilityStatus",
+          "selectionStatus"
+        ],
+        "properties": {
+          "slotId": {"type": "string", "minLength": 1, "maxLength": 160},
+          "commitmentHash": {"$ref": "#/$defs/sha256Prefixed"},
+          "ingredientId": {"type": ["string", "null"], "maxLength": 160},
+          "ingredientHash": {"$ref": "#/$defs/sha256PrefixedOrNull"},
+          "producerAddress": {"$ref": "#/$defs/address"},
+          "assemblyNodeId": {"type": ["string", "null"], "maxLength": 120},
+          "availabilityStatus": {
+            "enum": [
+              "available_before_cutoff",
+              "missing_at_cutoff",
+              "generator_fill"
+            ]
+          },
+          "selectionStatus": {
+            "enum": ["selected", "fallback_dropped", "generator_filled"]
+          },
+          "fallbackReason": {"type": ["string", "null"], "maxLength": 400}
+        }
+      }
+    },
+    "assemblyPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "hiddenUntil",
+        "publicInterfaceSetHash",
+        "nodes",
+        "edges",
+        "fallbackPolicy"
+      ],
+      "properties": {
+        "mode": {"const": "nonblocking-generator-composition-v0"},
+        "hiddenUntil": {"const": "short-session-start"},
+        "publicInterfaceSetHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/assemblyNode"}
+        },
+        "edges": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/assemblyEdge"}
+        },
+        "fallbackPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ranking", "allowedActions"],
+          "properties": {
+            "ranking": {
+              "enum": [
+                "drop-highest-complexity-first",
+                "drop-latest-reveal-first",
+                "fill-missing-from-generator-catalog",
+                "replace-with-noop-first"
+              ]
+            },
+            "allowedActions": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "enum": [
+                  "drop_card",
+                  "drop_ingredient",
+                  "generator_catalog_fill",
+                  "replace_with_noop"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "saltReveals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["participantId", "commitment", "saltHash", "accepted"],
+        "properties": {
+          "participantId": {"type": "string", "minLength": 1, "maxLength": 160},
+          "commitment": {"$ref": "#/$defs/sha256Prefixed"},
+          "saltHash": {"$ref": "#/$defs/sha256Prefixed"},
+          "accepted": {"type": "boolean"}
+        }
+      }
+    },
+    "verifierProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "deterministicReplay",
+        "solvabilityChecked",
+        "noPeerCode",
+        "checks"
+      ],
+      "properties": {
+        "status": {"enum": ["passed", "failed"]},
+        "deterministicReplay": {"type": "boolean"},
+        "solvabilityChecked": {"type": "boolean"},
+        "noPeerCode": {"type": "boolean"},
+        "minSolutionActions": {"type": ["integer", "null"], "minimum": 0},
+        "maxActionBudget": {"type": ["integer", "null"], "minimum": 1},
+        "checks": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 200}
+        },
+        "proofHash": {"$ref": "#/$defs/sha256PrefixedOrNull"}
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releaseTime", "releasePolicy", "traceEmbargoUntil"],
+      "properties": {
+        "releaseTime": {"type": "string", "format": "date-time"},
+        "releasePolicy": {"const": "publish-at-short-session-start"},
+        "traceEmbargoUntil": {"type": "string", "format": "date-time"}
+      }
+    },
+    "constitutionHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "signatures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/signature"}
+    }
+  },
+  "$defs": {
+    "address": {"type": "string", "pattern": "^0x[a-fA-F0-9]{40}$"},
+    "sha256Prefixed": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "sha256PrefixedOrNull": {
+      "anyOf": [
+        {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "address", "messageHash", "value"],
+      "properties": {
+        "type": {"enum": ["idena-node-dna-sign-v1", "idena-arc-secp256k1-v0"]},
+        "address": {"$ref": "#/$defs/address"},
+        "messageHash": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 1}
+      }
+    },
+    "assemblyNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nodeId",
+        "source",
+        "nodeHash",
+        "placement",
+        "rotation",
+        "reflection"
+      ],
+      "properties": {
+        "nodeId": {"type": "string", "minLength": 1, "maxLength": 120},
+        "source": {"enum": ["available_ingredient", "generator_catalog"]},
+        "nodeHash": {"$ref": "#/$defs/sha256Prefixed"},
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": {"type": "integer", "minimum": 0, "maximum": 63},
+            "y": {"type": "integer", "minimum": 0, "maximum": 63}
+          }
+        },
+        "rotation": {"enum": [0, 90, 180, 270]},
+        "reflection": {"enum": ["none", "horizontal", "vertical"]}
+      }
+    },
+    "assemblyEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "fromPort", "to", "toPort"],
+      "properties": {
+        "from": {"type": "string", "minLength": 1, "maxLength": 120},
+        "fromPort": {"$ref": "#/$defs/overlayPort"},
+        "to": {"type": "string", "minLength": 1, "maxLength": 120},
+        "toPort": {"$ref": "#/$defs/overlayPort"}
+      }
+    },
+    "overlayPort": {
+      "enum": ["north", "east", "south", "west", "start", "goal"]
+    }
+  }
+}

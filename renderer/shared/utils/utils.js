@@ -4,7 +4,6 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import {QueryClient} from 'react-query'
 import i18n from '../../i18n'
 import {EpochPeriod} from '../types'
-import bundledLegacyKeywords from '../../../idena-go/keywords/keywords.json'
 import {isValidationCountdownNoticeWindow} from './validation-notice'
 
 dayjs.extend(duration)
@@ -19,9 +18,6 @@ const LEGACY_KEYWORDS_URL =
   'https://raw.githubusercontent.com/idena-network/idena-go/v1.1.2/keywords/keywords.json'
 
 let legacyKeywordsPromise = null
-const BUNDLED_LEGACY_KEYWORDS = Array.isArray(bundledLegacyKeywords)
-  ? bundledLegacyKeywords
-  : []
 
 function getRpcBridge() {
   if (
@@ -192,10 +188,6 @@ function buildKeywordPlaceholder(index) {
 }
 
 async function getLegacyKeywords() {
-  if (BUNDLED_LEGACY_KEYWORDS.length > 0) {
-    return BUNDLED_LEGACY_KEYWORDS
-  }
-
   if (!legacyKeywordsPromise) {
     legacyKeywordsPromise = fetch(LEGACY_KEYWORDS_URL, {
       method: 'GET',

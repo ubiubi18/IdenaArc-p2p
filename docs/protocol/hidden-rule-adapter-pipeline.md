@@ -70,6 +70,25 @@ Avoid publishing artifacts that reveal the final rule instance before the
 session cutoff. Public artifacts before `T0` should be limited to generator hash,
 version, schema, and high-level capability family.
 
+## AI-Assisted Game Design
+
+Humans may use AI to draft new game ingredients from natural language, but the
+AI output is not a consensus object. IdenaArc treats AI as a compiler assistant:
+it can propose deterministic rule cards, path cards, path-dependent actions,
+object-role cards, scoring cards, and salt slots. The human signs only the
+compiled `idena-arc-game-ingredient-v0` artifact after local verifier checks.
+
+The short-session game is then constituted from multiple signed ingredients,
+accepted salt reveals, session entropy, and deterministic fallback rules. See
+[ai-assisted-game-design.md](ai-assisted-game-design.md).
+
+To reduce frontrunning without making the session depend on live peer delivery,
+ingredient payloads must be non-blocking overlays. Before `T0`, peers can
+inspect only public interface metadata such as ports, budget, capability tags,
+and conflict tags. If an optional payload is missing before the
+pre-constitution cutoff, the canonical generator fills that slot from final
+entropy.
+
 ## Trace Artifacts
 
 Per participant:

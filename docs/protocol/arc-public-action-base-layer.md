@@ -34,46 +34,46 @@ The public docs add two practical constraints for agents and trainers:
 `RESET` exists at the engine level for all games, but it is not a normal
 attempt action. It should be stored as an explicit reset event, not as failure.
 
-| Game | Available attempt actions | Input family |
-| --- | --- | --- |
-| `ls20` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4` | keyboard |
-| `ft09` | `ACTION6` | click |
-| `vc33` | `ACTION6` | click |
-| `ar25` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6`, `ACTION7` | keyboard, click, undo |
-| `bp35` | `ACTION3`, `ACTION4`, `ACTION6`, `ACTION7` | horizontal keyboard, click, undo |
-| `cd82` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6` | keyboard, click |
-| `cn04` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6` | keyboard, click |
-| `dc22` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6` | keyboard, click |
-| `g50t` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5` | keyboard |
-| `ka59` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6` | keyboard, click |
-| `lf52` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6`, `ACTION7` | keyboard, click, undo |
-| `lp85` | `ACTION6` | click |
-| `m0r0` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6` | keyboard, click |
-| `r11l` | `ACTION6` | click |
-| `re86` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5` | keyboard |
-| `s5i5` | `ACTION6` | click |
-| `sb26` | `ACTION5`, `ACTION6`, `ACTION7` | primary action, click, undo |
-| `sc25` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6` | keyboard, click |
-| `sk48` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6`, `ACTION7` | keyboard, click, undo |
-| `sp80` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6` | keyboard, click |
-| `su15` | `ACTION6`, `ACTION7` | click, undo |
-| `tn36` | `ACTION6` | click |
-| `tr87` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4` | keyboard |
-| `tu93` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4` | keyboard |
-| `wa30` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5` | keyboard |
+| Game   | Available attempt actions                                                   | Input family                     |
+| ------ | --------------------------------------------------------------------------- | -------------------------------- |
+| `ls20` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`                                  | keyboard                         |
+| `ft09` | `ACTION6`                                                                   | click                            |
+| `vc33` | `ACTION6`                                                                   | click                            |
+| `ar25` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6`, `ACTION7` | keyboard, click, undo            |
+| `bp35` | `ACTION3`, `ACTION4`, `ACTION6`, `ACTION7`                                  | horizontal keyboard, click, undo |
+| `cd82` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6`            | keyboard, click                  |
+| `cn04` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6`            | keyboard, click                  |
+| `dc22` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6`                       | keyboard, click                  |
+| `g50t` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`                       | keyboard                         |
+| `ka59` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6`                       | keyboard, click                  |
+| `lf52` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6`, `ACTION7`            | keyboard, click, undo            |
+| `lp85` | `ACTION6`                                                                   | click                            |
+| `m0r0` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6`            | keyboard, click                  |
+| `r11l` | `ACTION6`                                                                   | click                            |
+| `re86` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`                       | keyboard                         |
+| `s5i5` | `ACTION6`                                                                   | click                            |
+| `sb26` | `ACTION5`, `ACTION6`, `ACTION7`                                             | primary action, click, undo      |
+| `sc25` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6`                       | keyboard, click                  |
+| `sk48` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION6`, `ACTION7`            | keyboard, click, undo            |
+| `sp80` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`, `ACTION6`            | keyboard, click                  |
+| `su15` | `ACTION6`, `ACTION7`                                                        | click, undo                      |
+| `tn36` | `ACTION6`                                                                   | click                            |
+| `tr87` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`                                  | keyboard                         |
+| `tu93` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`                                  | keyboard                         |
+| `wa30` | `ACTION1`, `ACTION2`, `ACTION3`, `ACTION4`, `ACTION5`                       | keyboard                         |
 
 ## Canonical Action Annotations
 
-| Action | Human controls | Base-layer meaning | Annotation requirement |
-| --- | --- | --- | --- |
-| `ACTION1` | `W`, `ArrowUp` | Simple action, usually up-like movement. | Record actual frame delta. Do not assume movement happened or that up is always spatial. |
-| `ACTION2` | `S`, `ArrowDown` | Simple action, usually down-like movement. | Record actual frame delta, blocked/no-op status, and any rule side effect. |
-| `ACTION3` | `A`, `ArrowLeft` | Simple action, usually left-like movement. | Record actual frame delta and whether horizontal movement, selection, or mode change happened. |
-| `ACTION4` | `D`, `ArrowRight` | Simple action, usually right-like movement. | Record actual frame delta and whether it advanced a path, object, timer, or mode. |
-| `ACTION5` | `Space`, `F`, `Enter` | Primary simple action. Often interact, select, rotate, activate, confirm, or test. | Record target object, visible effect, hidden-rule hypothesis, and whether the action changes available options. |
-| `ACTION6` | Mouse/touch cell coordinates | Complex coordinate action with `{x,y}`. | Record clicked cell, clicked object/color, coordinate transform, result frame delta, and no-op/failure signal. |
-| `ACTION7` | `Ctrl+Z`, `Cmd+Z`, sometimes `Z` | Simple undo/correction channel. | Record whether it reverted state, changed hidden counters, or merely hid a bad exploration step. |
-| `RESET` | `R`, explicit UI reset | Start-over command. | Store separately from attempt failure. Never mix it into training as a normal solving action. |
+| Action    | Human controls                   | Base-layer meaning                                                                 | Annotation requirement                                                                                          |
+| --------- | -------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `ACTION1` | `W`, `ArrowUp`                   | Simple action, usually up-like movement.                                           | Record actual frame delta. Do not assume movement happened or that up is always spatial.                        |
+| `ACTION2` | `S`, `ArrowDown`                 | Simple action, usually down-like movement.                                         | Record actual frame delta, blocked/no-op status, and any rule side effect.                                      |
+| `ACTION3` | `A`, `ArrowLeft`                 | Simple action, usually left-like movement.                                         | Record actual frame delta and whether horizontal movement, selection, or mode change happened.                  |
+| `ACTION4` | `D`, `ArrowRight`                | Simple action, usually right-like movement.                                        | Record actual frame delta and whether it advanced a path, object, timer, or mode.                               |
+| `ACTION5` | `Space`, `F`, `Enter`            | Primary simple action. Often interact, select, rotate, activate, confirm, or test. | Record target object, visible effect, hidden-rule hypothesis, and whether the action changes available options. |
+| `ACTION6` | Mouse/touch cell coordinates     | Complex coordinate action with `{x,y}`.                                            | Record clicked cell, clicked object/color, coordinate transform, result frame delta, and no-op/failure signal.  |
+| `ACTION7` | `Ctrl+Z`, `Cmd+Z`, sometimes `Z` | Simple undo/correction channel.                                                    | Record whether it reverted state, changed hidden counters, or merely hid a bad exploration step.                |
+| `RESET`   | `R`, explicit UI reset           | Start-over command.                                                                | Store separately from attempt failure. Never mix it into training as a normal solving action.                   |
 
 ## Behavior Fields To Store Per Action
 
@@ -198,6 +198,17 @@ Suggested UI flow:
 The editor should feel like assembling rule cards, not writing code. Each card
 should show an icon, a compact label, and a before/after preview. The advanced
 JSON manifest stays hidden unless the user opens it.
+
+Natural-language AI help belongs at this editor boundary. A participant can
+describe a desired rule in plain language, but the AI response must compile into
+the same deterministic card shape and pass the same verifier as hand-authored
+cards. The model provider is a private drafting choice, not part of replay
+consensus.
+
+For anti-frontrun game design, the editor should prefer non-blocking template
+overlays over whole-game cards. An overlay exposes public compatibility metadata
+before `T0`, but the canonical generator can fill the same slot if the optional
+payload is missing before the pre-constitution cutoff.
 
 ## Rule Proposal Artifact Sketch
 

@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idena-arc.local/protocol/idena-arc-game-ingredient.schema.json",
+  "title": "IdenaArc Game Ingredient",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "version",
+    "ingredientId",
+    "createdAt",
+    "producerAddress",
+    "dslVersion",
+    "ingredientKind",
+    "baseActionSet",
+    "cards",
+    "saltSlots",
+    "constraints",
+    "verifier",
+    "payloadHash",
+    "signature"
+  ],
+  "properties": {
+    "protocol": {"const": "idena-arc-game-ingredient-v0"},
+    "version": {"const": 0},
+    "ingredientId": {"type": "string", "minLength": 1, "maxLength": 160},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "producerAddress": {"$ref": "#/$defs/address"},
+    "producerIdentityStatus": {"type": ["string", "null"], "maxLength": 80},
+    "dslVersion": {"const": "idena-arc-rule-dsl-v0"},
+    "ingredientKind": {
+      "enum": [
+        "action",
+        "path",
+        "template_overlay",
+        "path_dependent_action",
+        "object_role",
+        "scoring",
+        "salt_slot",
+        "mixed"
+      ]
+    },
+    "baseActionSet": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/actionChannel"}
+    },
+    "cards": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/ruleCard"}
+    },
+    "saltSlots": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/saltSlot"}
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provides",
+        "requires",
+        "complexity",
+        "budgetImpact",
+        "fallbackBehavior"
+      ],
+      "properties": {
+        "provides": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        },
+        "requires": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        },
+        "complexity": {"type": "integer", "minimum": 1, "maximum": 10},
+        "budgetImpact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minExtraActions", "maxExtraActions"],
+          "properties": {
+            "minExtraActions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 512
+            },
+            "maxExtraActions": {"type": "integer", "minimum": 0, "maximum": 512}
+          }
+        },
+        "fallbackBehavior": {
+          "enum": [
+            "drop_card",
+            "drop_ingredient",
+            "generator_catalog_fill",
+            "replace_with_noop"
+          ]
+        },
+        "templateOverlayContract": {"$ref": "#/$defs/templateOverlayContract"},
+        "conflictTags": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        },
+        "frontRunProtection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "preT0PublicFields": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1, "maxLength": 120}
+            },
+            "hiddenUntil": {"const": "session-constitution"},
+            "authorMayPlayOwnOverlay": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "aiAssistance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "used": {"type": "boolean"},
+        "role": {"const": "compiler-assistant-only"},
+        "providerPolicy": {
+          "enum": ["local-first", "any-private-provider", "network-model"]
+        },
+        "draftHash": {"$ref": "#/$defs/sha256PrefixedOrNull"}
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "deterministicOnly", "noPeerCode", "checks"],
+      "properties": {
+        "status": {"enum": ["passed", "failed", "needs_review"]},
+        "deterministicOnly": {"type": "boolean"},
+        "noPeerCode": {"type": "boolean"},
+        "checks": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 200}
+        },
+        "reportHash": {"$ref": "#/$defs/sha256PrefixedOrNull"}
+      }
+    },
+    "payloadHash": {"$ref": "#/$defs/sha256Prefixed"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "address": {"type": "string", "pattern": "^0x[a-fA-F0-9]{40}$"},
+    "sha256Prefixed": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "sha256PrefixedOrNull": {
+      "anyOf": [
+        {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "actionChannel": {
+      "enum": [
+        "ACTION1",
+        "ACTION2",
+        "ACTION3",
+        "ACTION4",
+        "ACTION5",
+        "ACTION6",
+        "ACTION7",
+        "RESET"
+      ]
+    },
+    "ruleCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cardId",
+        "kind",
+        "trigger",
+        "effects",
+        "observableFeedback"
+      ],
+      "properties": {
+        "cardId": {"type": "string", "minLength": 1, "maxLength": 120},
+        "kind": {
+          "enum": [
+            "action",
+            "path",
+            "template_overlay",
+            "path_dependent_action",
+            "object_role",
+            "scoring",
+            "salt_slot"
+          ]
+        },
+        "trigger": {"type": "object"},
+        "preconditions": {"type": "array", "items": {"type": "object"}},
+        "effects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "object"}
+        },
+        "observableFeedback": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "saltSlotRefs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 80}
+        }
+      }
+    },
+    "saltSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "domain", "revealPolicy"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 80},
+        "type": {
+          "enum": [
+            "action_remap",
+            "object_role",
+            "target_transform",
+            "permission_gate",
+            "delayed_effect",
+            "undo_semantics",
+            "budget_rule",
+            "mode_toggle"
+          ]
+        },
+        "domain": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        },
+        "revealPolicy": {"const": "reveal-at-session-constitution"}
+      }
+    },
+    "templateOverlayContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "templateFamily",
+        "width",
+        "height",
+        "entryPorts",
+        "exitPorts",
+        "minSolutionActions",
+        "maxSolutionActions",
+        "requiredAtT0",
+        "missingPayloadPolicy"
+      ],
+      "properties": {
+        "templateFamily": {"type": "string", "minLength": 1, "maxLength": 120},
+        "width": {"type": "integer", "minimum": 1, "maximum": 16},
+        "height": {"type": "integer", "minimum": 1, "maximum": 16},
+        "entryPorts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/overlayPort"}
+        },
+        "exitPorts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/overlayPort"}
+        },
+        "minSolutionActions": {"type": "integer", "minimum": 0, "maximum": 512},
+        "maxSolutionActions": {"type": "integer", "minimum": 1, "maximum": 512},
+        "requiredCapabilities": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        },
+        "conflictTags": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        },
+        "requiredAtT0": {"const": false},
+        "missingPayloadPolicy": {
+          "enum": [
+            "ignore_overlay",
+            "generator_catalog_fill",
+            "replace_with_noop"
+          ]
+        }
+      }
+    },
+    "overlayPort": {
+      "enum": ["north", "east", "south", "west", "start", "goal"]
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "address", "messageHash", "value"],
+      "properties": {
+        "type": {"enum": ["idena-node-dna-sign-v1", "idena-arc-secp256k1-v0"]},
+        "address": {"$ref": "#/$defs/address"},
+        "messageHash": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

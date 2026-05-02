@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at_utc": "2026-05-02T22:52:06+00:00",
+  "generated_at_utc": "2026-05-02T23:58:17+00:00",
   "project": {
     "name": "idena-arc",
     "product_name": "IdenaArc",
@@ -12,8 +12,8 @@
   },
   "git": {
     "branch": "main",
-    "head": "7513149759bcb5dbb1347bb43f328e470bd2f4d5",
-    "head_short": "75131497",
+    "head": "526415fce6b88f278b3b9b80ca3071f9a7ddb9a9",
+    "head_short": "526415fc",
     "remotes": {
       "origin": "https://github.com/ubiubi18/IdenaArc-p2p.git",
       "upstream": null
@@ -134,8 +134,48 @@
         "role": "documentation",
         "area": "docs",
         "notes": "Project and implementation docs",
-        "size_bytes": 13563,
-        "modified_utc": "2026-05-02T22:49:51+00:00"
+        "size_bytes": 16612,
+        "modified_utc": "2026-05-02T23:55:20+00:00"
+      },
+      {
+        "path": "docs/protocol/ai-assisted-game-design.md",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 6249,
+        "modified_utc": "2026-05-02T23:57:42+00:00"
+      },
+      {
+        "path": "docs/protocol/idena-arc-design-draft.schema.json",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 7350,
+        "modified_utc": "2026-05-02T23:55:55+00:00"
+      },
+      {
+        "path": "docs/protocol/idena-arc-ingredient-commitment.schema.json",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 5720,
+        "modified_utc": "2026-05-02T23:55:55+00:00"
+      },
+      {
+        "path": "docs/protocol/idena-arc-game-ingredient.schema.json",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 8859,
+        "modified_utc": "2026-05-02T23:55:55+00:00"
+      },
+      {
+        "path": "docs/protocol/idena-arc-game-constitution.schema.json",
+        "role": "documentation",
+        "area": "docs",
+        "notes": "Project and implementation docs",
+        "size_bytes": 8551,
+        "modified_utc": "2026-05-02T23:55:55+00:00"
       },
       {
         "path": "docs/protocol/idena-arc-trace-bundle.schema.json",
@@ -158,8 +198,8 @@
         "role": "documentation",
         "area": "docs",
         "notes": "Project and implementation docs",
-        "size_bytes": 11188,
-        "modified_utc": "2026-05-02T22:45:55+00:00"
+        "size_bytes": 12204,
+        "modified_utc": "2026-05-02T23:54:37+00:00"
       },
       {
         "path": "docs/deep-research-integration.md",
@@ -364,8 +404,8 @@
         "role": "tooling",
         "area": "ops",
         "notes": "Dataset import, audit, and run capture tools",
-        "size_bytes": 9118,
-        "modified_utc": "2026-05-02T22:49:56+00:00"
+        "size_bytes": 9547,
+        "modified_utc": "2026-05-02T23:50:29+00:00"
       }
     ],
     "tests": [
