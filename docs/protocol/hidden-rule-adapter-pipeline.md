@@ -107,6 +107,20 @@ metadata that permits redistribution.
 Public ARC-AGI fixtures are useful for testing human annotation UX, but they do
 not provide IdenaArc's decentralized hidden-seed property by themselves.
 
+## ARC-AGI-3 / HRM Design Note
+
+ARC-AGI-3 is interactive, so IdenaArc should evaluate exploration, goal
+discovery, world-model updating, and action efficiency rather than static answer
+replay. ARC Prize's HRM analysis is important here because it shows how much
+apparent benchmark performance can come from outer-loop refinement,
+augmentation, and task-specific adaptation rather than the advertised model
+architecture.
+
+For IdenaArc this means adapter gains must be separated into transferable
+capability, environment-specific adaptation, exploration-script improvement, and
+trace-memorization risk. See
+[arc-agi-3-hrm-design-note.md](arc-agi-3-hrm-design-note.md).
+
 ## Human Rule Annotation
 
 Minimum fields:

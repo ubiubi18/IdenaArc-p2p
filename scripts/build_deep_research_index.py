@@ -40,7 +40,13 @@ def run_git(args: List[str]) -> str:
 
 def maybe_git(args: List[str]) -> Optional[str]:
     try:
-        return run_git(args)
+        return (
+            subprocess.check_output(
+                ["git", *args], cwd=REPO_ROOT, stderr=subprocess.DEVNULL
+            )
+            .decode("utf-8", errors="replace")
+            .strip()
+        )
     except Exception:
         return None
 
@@ -96,6 +102,9 @@ def main() -> None:
             REPO_ROOT / "docs" / "flip-consensus-audit.md",
             REPO_ROOT / "docs" / "flip-challenge-import.md",
             REPO_ROOT / "docs" / "flip-reasoning-paper-optimizations.md",
+            REPO_ROOT / "docs" / "protocol" / "arc-agi-3-hrm-design-note.md",
+            REPO_ROOT / "docs" / "protocol" / "anti-shortcut-policy.md",
+            REPO_ROOT / "docs" / "protocol" / "hidden-rule-adapter-pipeline.md",
             REPO_ROOT / "docs" / "deep-research-integration.md",
         ]
     )

@@ -51,6 +51,16 @@ that family has become easier and should be rotated or made more compositional.
 - Treat strong agent performance as feedback that the family needs evolution,
   not as proof that identity or timing failed.
 
+## ARC-AGI-3 Benchmark Hygiene
+
+ARC-AGI-3-style evaluation is interactive. A good result can come from a better
+exploration loop or environment-specific adaptation without proving broad
+reasoning transfer. IdenaArc should therefore label adapter gains by whether
+they transfer to hidden seeds and held-out generator variants, or whether they
+mainly reflect scripted probing, public-fixture familiarity, or trace
+memorization. See
+[arc-agi-3-hrm-design-note.md](arc-agi-3-hrm-design-note.md).
+
 ## Federated Learning Boundary
 
 The federated path should reward conceptual transfer without leaking fresh
