@@ -20,7 +20,16 @@ const requiredPackageExcludes = [
   '!tmp/**',
   '!data/**',
   '!logs/**',
+  '!build/**',
   '!coverage/**',
+  '!idena-go/**',
+  '!idena-wasm/**',
+  '!idena-wasm-binding/**',
+  '!samples/flips/flip-challenge-human-teacher-500-balanced.part-*.json',
+  '!docs/**',
+  '!test/**',
+  '!output/**',
+  '!.playwright-cli/**',
 ]
 
 const requiredNoticeSnippets = [
@@ -38,6 +47,9 @@ const requiredEnvKeys = [
   'IDENAAI_GEMINI_MODEL=',
   'IDENAAI_USE_PY_FLIP_PIPELINE=',
   'IDENAAI_PYTHON=',
+  'IDENA_ARC_NODE_SOURCE_BUILD=',
+  'IDENA_ARC_NODE_RELEASE_URL=',
+  'IDENA_ARC_NODE_DISABLE_REMOTE_DOWNLOAD=',
   'IDENAAI_BENCH_LOGGING=',
   'IDENAAI_BENCH_LOG_MAX_MB=',
 ]
@@ -100,8 +112,9 @@ requireCondition(
     packageJson.build.publish[0] &&
     packageJson.build.publish[0].provider === 'github' &&
     packageJson.build.publish[0].owner === 'ubiubi18' &&
-    packageJson.build.publish[0].repo === 'IdenaArc-p2p',
-  'package.json build.publish must point to the IdenaArc-p2p GitHub release feed'
+    packageJson.build.publish[0].repo === 'IdenaArc-p2p' &&
+    packageJson.build.publish[0].releaseType === 'release',
+  'package.json build.publish must point to the IdenaArc-p2p GitHub release feed and publish final releases'
 )
 
 const buildFiles = new Set(

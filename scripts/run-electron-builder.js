@@ -5,9 +5,15 @@ const {execFileSync, spawnSync} = require('child_process')
 
 const ROOT = path.join(__dirname, '..')
 const ELECTRON_BUILDER_CLI = require.resolve('electron-builder/out/cli/cli')
+const PREPARE_BUNDLED_NODE = path.join(__dirname, 'prepare-bundled-node.js')
 
 const MAC_PLATFORM_FLAGS = new Set(['--mac', '-m'])
-const NON_MAC_PLATFORM_FLAGS = new Set(['--win', '-w', '--linux', '-l'])
+const WIN_PLATFORM_FLAGS = new Set(['--win', '-w'])
+const LINUX_PLATFORM_FLAGS = new Set(['--linux', '-l'])
+const NON_MAC_PLATFORM_FLAGS = new Set([
+  ...WIN_PLATFORM_FLAGS,
+  ...LINUX_PLATFORM_FLAGS,
+])
 const ARCH_FLAGS = new Set([
   '--arm64',
   '--x64',
@@ -70,6 +76,29 @@ function shouldAppendMacArch(argv) {
   return !targetsNonMacOnly
 }
 
+function shouldPreparePlatformBundle(argv) {
+  const targetsMacPlatform = includesAny(argv, MAC_PLATFORM_FLAGS)
+  const targetsWinPlatform = includesAny(argv, WIN_PLATFORM_FLAGS)
+  const targetsLinuxPlatform = includesAny(argv, LINUX_PLATFORM_FLAGS)
+  const hasExplicitPlatform =
+    targetsMacPlatform || targetsWinPlatform || targetsLinuxPlatform
+
+  if (!hasExplicitPlatform) {
+    return true
+  }
+
+  if (process.platform === 'darwin') {
+    return targetsMacPlatform
+  }
+  if (process.platform === 'win32') {
+    return targetsWinPlatform
+  }
+  if (process.platform === 'linux') {
+    return targetsLinuxPlatform
+  }
+  return false
+}
+
 const args = process.argv.slice(2)
 
 if (shouldAppendMacArch(args)) {
@@ -78,6 +107,25 @@ if (shouldAppendMacArch(args)) {
   console.log(
     `[electron-builder-wrapper] Detected macOS machine architecture ${targetArch}; packaging target set to ${targetArch}.`
   )
+}
+
+if (shouldPreparePlatformBundle(args)) {
+  const prepareResult = spawnSync(process.execPath, [PREPARE_BUNDLED_NODE], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: 'inherit',
+  })
+
+  if (prepareResult.error) {
+    console.error(
+      `preparing bundled Idena node failed: ${prepareResult.error.message}`
+    )
+    process.exit(1)
+  }
+
+  if (prepareResult.status !== 0) {
+    process.exit(prepareResult.status || 1)
+  }
 }
 
 const result = spawnSync(process.execPath, [ELECTRON_BUILDER_CLI, ...args], {

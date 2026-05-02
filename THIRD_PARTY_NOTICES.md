@@ -7,9 +7,9 @@ upstream project. Review this file before preparing a public release.
 | ----------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Active desktop app fork from upstream `idena-desktop` | `main/`, `renderer/`, root scripts | MIT. Keep the original 2020 Idena copyright notice. See `LICENSE` and `LICENSES/MIT.txt`.                                   |
 | Community AI benchmark/helper modifications           | `main/`, `renderer/`, root scripts | MIT. Copyright 2026 ubiubi18 and contributors. Created as prompt-driven community research work; not independently audited. |
-| Idena node source snapshot                            | `idena-go/`                        | LGPL-3.0. See `idena-go/LICENSE` and `LICENSES/LGPL-3.0.txt`.                                                               |
-| Idena wasm Go binding snapshot                        | `idena-wasm-binding/`              | LGPL-3.0. See `idena-wasm-binding/LICENSE` and `LICENSES/LGPL-3.0.txt`.                                                     |
-| Idena wasm runtime source snapshot                    | `idena-wasm/`                      | Bundled source snapshot. Verify upstream license metadata before publishing a formal binary release.                        |
+| Idena node source mirror                              | `idena-go/`                        | LGPL-3.0. Created locally by `npm run setup:sources` from the pinned source manifest.                                        |
+| Idena wasm Go binding mirror                          | `idena-wasm-binding/`              | LGPL-3.0. Created locally by `npm run setup:sources` from the pinned source manifest.                                        |
+| Idena wasm runtime source mirror                      | `idena-wasm/`                      | Created locally by `npm run setup:sources` from the pinned source manifest. Verify upstream license metadata before release. |
 | `idena.social` smart-contract snapshot                | `vendor/idena.social-contract/`    | MIT. Copyright 2025 N3CR0M4NC3R. Keep `vendor/idena.social-contract/LICENCE` in redistributed source bundles.               |
 | `idena.social-ui` source snapshot                     | `vendor/idena.social-ui/`          | MIT. Copyright 2025 N3CR0M4NC3R. Used to build the bundled in-app Social view snapshot. Keep its `LICENCE` file in place.  |
 | Sample flip data                                      | `samples/flips/`                   | Research sample material bundled for reproducibility. Verify distribution constraints before public dataset redistribution. |
@@ -22,10 +22,9 @@ upstream project. Review this file before preparing a public release.
   code.
 - The 2026 ubiubi18 MIT notice covers community modifications to the extent the
   contributors own those modifications; it does not relicense LGPL components.
-- Large static libraries in `idena-wasm-binding/lib/` may be better handled via
-  release artifacts or Git LFS for a polished public release.
-- Chunked FLIP-Challenge rehearsal samples in `samples/flips/` are bundled so
-  local rehearsal and benchmark runs can work without a network fetch.
-- A cleaner release can avoid bundling `idena-go/`, `idena-wasm/`, and
-  `idena-wasm-binding/` snapshots and instead document how to fetch/build those
-  upstream components separately.
+- Large static libraries in `idena-wasm-binding/lib/` are source-mirror outputs,
+  not tracked release payloads.
+- Chunked FLIP-Challenge rehearsal samples should be generated or imported
+  locally with `npm run setup:flips` instead of tracked as public release data.
+- Source releases should document `npm run setup:sources` and the pinned
+  manifest before asking users to build the managed node runtime.

@@ -15,7 +15,12 @@ const syntaxCheckedFiles = [
   'scripts/sync-idena-social-ui.js',
   'scripts/run-next-static-build.js',
   'scripts/release-check.js',
+  'scripts/setup-sources.js',
+  'scripts/setup-flips.js',
+  'scripts/source-doctor.js',
+  'scripts/build-node-from-sources.js',
   'scripts/run-electron-builder.js',
+  'scripts/prepare-bundled-node.js',
   'main/channels.js',
   'main/index.js',
   'main/preload.js',
@@ -34,6 +39,7 @@ function runStep(label, command, args) {
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     env: process.env,
+    shell: process.platform === 'win32' && /\.cmd$/i.test(command),
     stdio: 'inherit',
   })
 

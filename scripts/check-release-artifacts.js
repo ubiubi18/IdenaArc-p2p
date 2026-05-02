@@ -27,14 +27,6 @@ const allowedLargeArtifacts = new Map([
     'idena-wasm-binding/lib/libidena_wasm_windows_amd64.a',
     'bundled wasm artifact',
   ],
-  [
-    'samples/flips/flip-challenge-human-teacher-500-balanced.part-1.json',
-    'chunked FLIP-Challenge rehearsal sample',
-  ],
-  [
-    'samples/flips/flip-challenge-human-teacher-500-balanced.part-2.json',
-    'chunked FLIP-Challenge rehearsal sample',
-  ],
 ])
 
 function formatMb(bytes) {

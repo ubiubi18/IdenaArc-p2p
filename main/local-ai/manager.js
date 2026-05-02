@@ -2977,7 +2977,7 @@ function normalizeDeveloperHumanTeacherState(
     0,
     Number.parseInt(totalAvailableTasks, 10) || 0
   )
-  const total = Math.max(persistedTotal, discoveredTotal)
+  const total = discoveredTotal || persistedTotal
 
   return {
     ...fallback,

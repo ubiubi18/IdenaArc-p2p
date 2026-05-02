@@ -1739,7 +1739,7 @@ describe('local-ai manager', () => {
     )
   })
 
-  it('expands the existing developer annotation pool to the balanced 500-flip slice without losing prior annotations', async () => {
+  it('keeps existing developer annotations when opening the bundled training slice', async () => {
     const manager = createLocalAiManager({logger: mockLogger(), storage})
 
     await storage.writeJsonAtomic(
@@ -1789,11 +1789,11 @@ describe('local-ai manager', () => {
         taskCount: 5,
       }),
       state: expect.objectContaining({
-        totalAvailableTasks: 500,
+        totalAvailableTasks: 20,
         supportsLocalTraining: true,
         annotatedCount: 5,
         pendingTrainingCount: 5,
-        remainingTaskCount: 495,
+        remainingTaskCount: 15,
       }),
     })
     expect(session).not.toHaveProperty('statePath')
@@ -1823,7 +1823,7 @@ describe('local-ai manager', () => {
         mode: 'developer-human-teacher',
         sampleName: 'flip-challenge-test-20-decoded-labeled',
         chunkSize: 5,
-        totalAvailableTasks: 500,
+        totalAvailableTasks: 20,
         currentOffset: 0,
         annotatedTaskIds: completedChunkTaskIds,
         pendingTrainingTaskIds: completedChunkTaskIds,
@@ -2186,7 +2186,7 @@ describe('local-ai manager', () => {
         mode: 'developer-human-teacher',
         sampleName: 'flip-challenge-test-20-decoded-labeled',
         chunkSize: 5,
-        totalAvailableTasks: 500,
+        totalAvailableTasks: 20,
         currentOffset: 0,
         annotatedTaskIds: alreadyAnnotatedNextChunkTaskIds,
         pendingTrainingTaskIds: alreadyAnnotatedNextChunkTaskIds,
@@ -2855,7 +2855,7 @@ describe('local-ai manager', () => {
       mode: 'developer-human-teacher',
       sampleName: 'flip-challenge-test-20-decoded-labeled',
       chunkSize: 5,
-      totalAvailableTasks: 500,
+      totalAvailableTasks: 20,
       currentOffset: 5,
       annotatedTaskIds: [
         'demo:flip-challenge-test-20-decoded-labeled:1',
@@ -3035,7 +3035,7 @@ describe('local-ai manager', () => {
       mode: 'developer-human-teacher',
       sampleName: 'flip-challenge-test-20-decoded-labeled',
       chunkSize: 5,
-      totalAvailableTasks: 500,
+      totalAvailableTasks: 20,
       currentOffset: 5,
       annotatedTaskIds: [],
       pendingTrainingTaskIds: [],
@@ -3515,10 +3515,7 @@ describe('local-ai manager', () => {
           expect.objectContaining({
             flipHash: 'flip-improved',
             changeType: 'improved',
-            reviewTarget: expect.objectContaining({
-              taskId: 'demo:flip-challenge-test-20-decoded-labeled:101',
-              offset: 100,
-            }),
+            reviewTarget: null,
             current: expect.objectContaining({
               predicted: 'left',
               correct: true,

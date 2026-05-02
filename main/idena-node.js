@@ -70,6 +70,114 @@ const getTempNodeBuildInfoFile = () =>
 const getTempNodeFile = () =>
   path.join(getNodeDir(), `new-${idenaBin}${getBinarySuffix()}`)
 
+function getBundledNodeFileCandidates() {
+  const suffix = getBinarySuffix()
+  const candidates = []
+
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'node', idenaBin + suffix))
+  }
+
+  candidates.push(
+    path.resolve(__dirname, '..', 'node', idenaBin + suffix),
+    path.resolve(__dirname, '..', '..', 'node', idenaBin + suffix)
+  )
+
+  return candidates
+}
+
+async function findBundledNodeFile() {
+  for (const candidate of getBundledNodeFileCandidates()) {
+    try {
+      const stats = await fs.stat(candidate)
+      if (stats && stats.size >= minNodeBinarySize) {
+        return candidate
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  return null
+}
+
+async function copyBundledNode(tempNodeFile, onProgress) {
+  const bundledNodeFile = await findBundledNodeFile()
+
+  if (!bundledNodeFile) {
+    return null
+  }
+
+  let version = ''
+
+  try {
+    version = await getBinaryVersion(bundledNodeFile)
+  } catch (error) {
+    logger.warn('cannot inspect bundled node binary', {
+      bundledNodeFile,
+      error: error.message,
+    })
+    return null
+  }
+
+  if (version !== pinnedNodeVersion) {
+    logger.warn('ignoring incompatible bundled node binary', {
+      bundledNodeFile,
+      version,
+      expected: pinnedNodeVersion,
+    })
+    return null
+  }
+
+  const stats = await fs.stat(bundledNodeFile)
+
+  if (onProgress) {
+    onProgress({
+      version,
+      percentage: 5,
+      transferred: 0,
+      length: stats.size,
+      eta: 0,
+      runtime: 0,
+      speed: 0,
+      stage: 'bundled-copy-start',
+    })
+  }
+
+  await fs.copy(bundledNodeFile, tempNodeFile, {overwrite: true})
+
+  if (process.platform !== 'win32') {
+    await fs.chmod(tempNodeFile, '755')
+  }
+
+  await writeTempNodeBuildInfo({
+    source: idenaArcPatchedNodeSource,
+    version,
+    tag: pinnedNodeTag,
+    platform: process.platform,
+    arch: process.arch,
+    bundledNodeFile,
+    copiedAt: new Date().toISOString(),
+  })
+
+  if (onProgress) {
+    onProgress({
+      version,
+      percentage: 100,
+      transferred: stats.size,
+      length: stats.size,
+      eta: 0,
+      runtime: 0,
+      speed: 0,
+      stage: 'bundled-copy-complete',
+    })
+  }
+
+  logger.info('prepared Idena node from bundled binary', {bundledNodeFile})
+
+  return version
+}
+
 const getNodeChainDbFolder = () =>
   path.join(getNodeDataDir(), idenaChainDbFolder)
 
@@ -856,6 +964,38 @@ function shouldAllowUpstreamNodeBinary(options = {}) {
   return process.env.IDENA_NODE_ALLOW_UPSTREAM_BINARY === '1'
 }
 
+function isTruthyEnv(value) {
+  return ['1', 'true', 'yes', 'on'].includes(
+    String(value || '')
+      .trim()
+      .toLowerCase()
+  )
+}
+
+function isFalseyEnv(value) {
+  return ['0', 'false', 'no', 'off'].includes(
+    String(value || '')
+      .trim()
+      .toLowerCase()
+  )
+}
+
+function shouldAllowLocalSourceBuild(options = {}) {
+  if (typeof options.allowLocalSourceBuild === 'boolean') {
+    return options.allowLocalSourceBuild
+  }
+
+  return !isFalseyEnv(process.env.IDENA_ARC_NODE_SOURCE_BUILD)
+}
+
+function shouldDisableRemoteNodeDownload(options = {}) {
+  if (typeof options.disableRemoteDownload === 'boolean') {
+    return options.disableRemoteDownload
+  }
+
+  return isTruthyEnv(process.env.IDENA_ARC_NODE_DISABLE_REMOTE_DOWNLOAD)
+}
+
 async function getPinnedRelease(url) {
   const {data: release} = await httpClient.get(url, {
     timeout: 15000,
@@ -1098,7 +1238,14 @@ function releaseToCompatibleInfo(release, {trustedSource}) {
 }
 
 async function getCompatibleReleaseInfo(options = {}) {
-  if (options.preferLocalBuild && findLocalNodeRepo()) {
+  const allowLocalSourceBuild = shouldAllowLocalSourceBuild(options)
+  const disableRemoteDownload = shouldDisableRemoteNodeDownload(options)
+
+  if (
+    options.preferLocalBuild &&
+    allowLocalSourceBuild &&
+    findLocalNodeRepo()
+  ) {
     return {
       version: pinnedNodeVersion,
       url: '',
@@ -1110,7 +1257,9 @@ async function getCompatibleReleaseInfo(options = {}) {
     }
   }
 
-  const patchedReleaseUrl = getPatchedNodeReleaseUrl()
+  const patchedReleaseUrl = disableRemoteDownload
+    ? ''
+    : getPatchedNodeReleaseUrl()
   if (patchedReleaseUrl) {
     const patchedRelease = await getPinnedRelease(patchedReleaseUrl)
     const patchedInfo = releaseToCompatibleInfo(patchedRelease, {
@@ -1122,7 +1271,7 @@ async function getCompatibleReleaseInfo(options = {}) {
     }
   }
 
-  if (shouldAllowUpstreamNodeBinary(options)) {
+  if (!disableRemoteDownload && shouldAllowUpstreamNodeBinary(options)) {
     const release = await getPinnedRelease(upstreamIdenaNodePinnedReleaseUrl)
     const upstreamInfo = releaseToCompatibleInfo(release, {
       trustedSource: upstreamIdenaReleaseSource,
@@ -1133,7 +1282,7 @@ async function getCompatibleReleaseInfo(options = {}) {
     }
   }
 
-  if (findLocalNodeRepo()) {
+  if (allowLocalSourceBuild && findLocalNodeRepo()) {
     return {
       version: pinnedNodeVersion,
       url: '',
@@ -1219,12 +1368,19 @@ async function downloadNode(onProgress, options = {}) {
   const tempBuildInfoFile = getTempNodeBuildInfoFile()
 
   try {
-    const release = await getCompatibleReleaseInfo(options)
-    const {url, version, localBuild, trustedSource} = release
-
     await fs.ensureDir(getNodeDir())
     await fs.remove(tempNodeFile)
     await fs.remove(tempBuildInfoFile)
+
+    if (!options.skipBundledNode) {
+      const bundledVersion = await copyBundledNode(tempNodeFile, onProgress)
+      if (bundledVersion) {
+        return bundledVersion
+      }
+    }
+
+    const release = await getCompatibleReleaseInfo(options)
+    const {url, version, localBuild, trustedSource} = release
 
     if (localBuild) {
       await buildLocalPinnedNode(tempNodeFile, onProgress)

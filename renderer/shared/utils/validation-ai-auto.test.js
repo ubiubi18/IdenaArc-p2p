@@ -248,6 +248,17 @@ describe('validation ai auto gating', () => {
     ).toBe(false)
   })
 
+  it('allows explicitly overridden terminal session auto mode in dev builds', () => {
+    expect(
+      shouldBlockSessionAutoInDev({
+        isDev: true,
+        allowDevSessionAuto: true,
+        forceAiPreview: false,
+        isRehearsalNodeSession: false,
+      })
+    ).toBe(false)
+  })
+
   it('requires explicit consent for real on-chain session auto mode', () => {
     expect(
       shouldAllowSessionAutoMode({

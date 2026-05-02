@@ -51,6 +51,7 @@ Node is pinned to `24.15.0`.
 ```bash
 nvm use 24.15.0
 npm install
+npm run setup:sources
 npm start
 ```
 
@@ -67,8 +68,12 @@ pip install -e "python/idena_arc[arc-agi]"
 ## Rehearsal Node
 
 Rehearsal devnet requires the IdenaArc patched `idena-go` build marker. The app
-builds from bundled `idena-go/` and `idena-wasm-binding/` when the patched
-binary is missing.
+builds from pinned source mirrors when the patched binary is missing. The source
+mirrors are not meant to be hand-edited in this repo; refresh them with:
+
+```bash
+npm run setup:sources
+```
 
 Override source path:
 
@@ -82,10 +87,20 @@ Official upstream binaries are disabled for rehearsal unless explicitly allowed:
 IDENA_NODE_ALLOW_UPSTREAM_BINARY=1 npm start
 ```
 
+For deliberate real-session testing from Terminal, use an explicit real app
+profile and safety override:
+
+```bash
+IDENA_DESKTOP_USER_DATA_DIR="$HOME/Library/Application Support/IdenaArc" \
+IDENA_DESKTOP_ALLOW_DEV_SESSION_AUTO=1 \
+npm start
+```
+
 ## Large bundled artifacts
 
-Large `idena-wasm-binding` static libraries are tracked intentionally for
-reproducible local rehearsal builds; do not add new large artifacts outside the
+Large source/runtime artifacts are generated locally from pinned mirrors and are
+ignored by git. Packaged builds include only the prepared `idena-go` binary from
+`build/node/current`; do not add new large tracked artifacts outside the
 release-artifact allowlist.
 
 ## Checks
